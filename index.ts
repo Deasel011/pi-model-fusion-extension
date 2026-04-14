@@ -19,10 +19,23 @@ interface CandidateRun {
   workspaceCwd: string;
 }
 
+interface CriterionScore {
+  criterion: string;
+  score: number;
+  notes: string;
+}
+
+interface JudgeScore {
+  model: string;
+  score: number;
+  notes: string;
+  criterionScores?: CriterionScore[];
+}
+
 interface JudgeDecision {
   winnerModel: string;
   reasoning: string;
-  scores: Array<{ model: string; score: number; notes: string }>;
+  scores: JudgeScore[];
   finalDiff: string;
 }
 
@@ -57,7 +70,7 @@ interface JudgeMonitorEntry {
   finishedAt?: string;
   reasoning?: string;
   finalDiff?: string;
-  scores?: Array<{ model: string; score: number; notes: string }>;
+  scores?: JudgeScore[];
   error?: string;
 }
 
@@ -106,6 +119,11 @@ const Details = Type.Object({
     model: Type.String(),
     score: Type.Number(),
     notes: Type.String(),
+    criterionScores: Type.Optional(Type.Array(Type.Object({
+      criterion: Type.String(),
+      score: Type.Number(),
+      notes: Type.String(),
+    }))),
   })),
 });
 
@@ -251,7 +269,8 @@ function buildJudgePrompt(input: {
     "You are also running in an isolated workspace snapshot; do not assume any candidate changed the shared project tree.",
     `Merge mode: ${input.mergeMode}. If merge_with_top, synthesize the best combined patch anchored on the top-ranked solution.`,
     "Return ONLY this XML payload:",
-    "<fusion>{\"winnerModel\":\"...\",\"reasoning\":\"...\",\"scores\":[{\"model\":\"...\",\"score\":0-100,\"notes\":\"...\"}],\"finalDiff\":\"unified diff\"}</fusion>",
+    "<fusion>{\"winnerModel\":\"...\",\"reasoning\":\"...\",\"scores\":[{\"model\":\"...\",\"score\":0-100,\"notes\":\"overall summary\",\"criterionScores\":[{\"criterion\":\"correctness\",\"score\":0-100,\"notes\":\"criterion-specific notes\"}]}],\"finalDiff\":\"unified diff\"}</fusion>",
+    "For every model in scores, include criterionScores with one entry for every scoring criterion, using the exact criterion names.",
     "Scoring criteria:",
     ...input.criteria.map((c, i) => `${i + 1}. ${c}`),
     `Task:\n${input.task}`,
@@ -803,7 +822,10 @@ export default function registerModelFusionExtension(pi: ExtensionAPI): void {
               decision.reasoning,
               "",
               "Scores:",
-              ...decision.scores.map((s) => `- ${s.model}: ${s.score} (${s.notes})`),
+              ...decision.scores.flatMap((s) => [
+                `- ${s.model}: ${s.score} (${s.notes})`,
+                ...(s.criterionScores?.map((criterionScore) => `  - ${criterionScore.criterion}: ${criterionScore.score} (${criterionScore.notes})`) ?? []),
+              ]),
               "",
               `Apply result: ${apply.message}`,
               workspaceInfo,

@@ -157,6 +157,17 @@
         border-radius: 10px;
         background: #0e1627;
       }
+      .criterion-list {
+        display: grid;
+        gap: 8px;
+        margin-top: 10px;
+      }
+      .criterion-item {
+        padding: 8px 10px;
+        border: 1px solid #22304d;
+        border-radius: 10px;
+        background: #0a1120;
+      }
       a { color: var(--accent); }
       @media (max-width: 980px) {
         .app { grid-template-columns: 1fr; }
@@ -170,7 +181,8 @@
       type WorkspaceStatus = "pending" | "snapshotting" | "running" | "completed" | "failed";
       type RunPhase = "preparing_workspaces" | "running_candidates" | "judging" | "applying" | "completed" | "failed";
 
-      type Score = { model: string; score: number; notes: string };
+      type CriterionScore = { criterion: string; score: number; notes: string };
+      type Score = { model: string; score: number; notes: string; criterionScores?: CriterionScore[] };
       type Candidate = {
         model: string;
         workspaceLabel: string;
@@ -379,6 +391,19 @@
                                 <span className="badge accent">{score.score}</span>
                               </div>
                               <div className="small" style={{ marginTop: 6 }}>{score.notes}</div>
+                              {score.criterionScores?.length ? (
+                                <div className="criterion-list">
+                                  {score.criterionScores.map((criterionScore) => (
+                                    <div key={`${score.model}-${criterionScore.criterion}`} className="criterion-item">
+                                      <div className="row space-between">
+                                        <span>{criterionScore.criterion}</span>
+                                        <span className="badge">{criterionScore.score}</span>
+                                      </div>
+                                      <div className="small" style={{ marginTop: 6 }}>{criterionScore.notes}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : null}
                             </div>
                           ))}
                         </div>

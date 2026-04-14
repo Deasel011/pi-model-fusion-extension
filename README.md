@@ -8,6 +8,7 @@ A TypeScript extension for [pi.dev](https://pi.dev/) that runs one coding task a
 - Create a dedicated isolated workspace snapshot for each candidate model so parallel runs never touch the same files.
 - Run the judge in its own isolated workspace snapshot as well.
 - Stream live per-model/per-workspace progress updates during execution.
+- Show judge scoring with per-criterion breakdowns for each candidate model.
 - Expose a `/model-fusion-monitor` command that opens a local browser dashboard for manual monitoring.
 - Score outputs against user-provided criteria.
 - Use a **predefined judge model** to select best output.
@@ -76,7 +77,7 @@ Example call:
 - When `cwd` is a git repo, workspaces are created from a detached `git worktree` snapshot plus current uncommitted tracked and untracked changes.
 - The judge also runs in an isolated workspace.
 - Live run state is persisted to `~/.pi/agent/extensions/model-fusion/monitor-state.json` and served by the browser monitor.
-- Use `/model-fusion-monitor` to open the local dashboard and inspect candidate workspaces, criteria, scores, reasoning, and the chosen winner.
+- Use `/model-fusion-monitor` to open the local dashboard and inspect candidate workspaces, criteria, per-criterion scores, reasoning, and the chosen winner.
 - Set `PI_MODEL_FUSION_KEEP_WORKSPACES=1` to keep workspaces for debugging instead of auto-cleaning them.
 - Judge must return a `<fusion>` JSON payload with a final unified diff (`finalDiff`).
 - If patch apply fails, output still includes ranking and rationale so the user can manually apply/adapt.
