@@ -15,7 +15,7 @@ A TypeScript extension for [pi.dev](https://pi.dev/) that runs one coding task a
 ## Install
 
 ```bash
-pi install npm:pi-model-fusion
+pi install git:https://github.com/Deasel011/pi-model-fusion-extension/
 ```
 
 ## Prompt-driven usage
