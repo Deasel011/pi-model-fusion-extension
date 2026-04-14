@@ -16,7 +16,8 @@
     "*.ts",
     "README.md",
     "skills/**",
-    "prompts/**"
+    "prompts/**",
+    "monitor/**"
   ],
   "pi": {
     "extensions": [

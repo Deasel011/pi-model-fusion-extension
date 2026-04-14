@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Model Fusion Monitor</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b1020;
+        --panel: #121a2b;
+        --panel-2: #182238;
+        --border: #293652;
+        --text: #e8edf7;
+        --muted: #9fb0d0;
+        --accent: #66b3ff;
+        --good: #49d17d;
+        --warn: #ffcc66;
+        --bad: #ff6b6b;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: linear-gradient(180deg, #0b1020 0%, #0f1727 100%);
+        color: var(--text);
+      }
+      .app {
+        display: grid;
+        grid-template-columns: 320px 1fr;
+        min-height: 100vh;
+      }
+      .sidebar {
+        border-right: 1px solid var(--border);
+        background: rgba(8, 14, 26, 0.7);
+        padding: 16px;
+        overflow: auto;
+      }
+      .main {
+        padding: 20px;
+        overflow: auto;
+      }
+      .title {
+        margin: 0 0 4px;
+        font-size: 24px;
+      }
+      .subtitle {
+        margin: 0 0 16px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .run-card,
+      .panel,
+      .candidate-card {
+        background: rgba(18, 26, 43, 0.95);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 14px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+      }
+      .run-card {
+        margin-bottom: 12px;
+        cursor: pointer;
+        transition: border-color 0.15s ease, transform 0.15s ease;
+      }
+      .run-card:hover { transform: translateY(-1px); border-color: #40609b; }
+      .run-card.active { border-color: var(--accent); }
+      .run-card h3 {
+        margin: 0 0 8px;
+        font-size: 14px;
+      }
+      .small {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        gap: 16px;
+      }
+      .candidate-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+        gap: 16px;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .space-between {
+        justify-content: space-between;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 8px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: var(--panel-2);
+        font-size: 12px;
+        color: var(--text);
+      }
+      .badge.good { color: var(--good); border-color: rgba(73, 209, 125, 0.4); }
+      .badge.warn { color: var(--warn); border-color: rgba(255, 204, 102, 0.4); }
+      .badge.bad { color: var(--bad); border-color: rgba(255, 107, 107, 0.4); }
+      .badge.accent { color: var(--accent); border-color: rgba(102, 179, 255, 0.4); }
+      .panel + .panel { margin-top: 16px; }
+      .muted { color: var(--muted); }
+      pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        background: #0a1120;
+        border: 1px solid #22304d;
+        border-radius: 10px;
+        padding: 12px;
+        margin: 8px 0 0;
+        max-height: 320px;
+        overflow: auto;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+      }
+      details summary {
+        cursor: pointer;
+        color: var(--accent);
+        margin-top: 8px;
+      }
+      .empty {
+        border: 1px dashed var(--border);
+        border-radius: 14px;
+        padding: 40px;
+        text-align: center;
+        color: var(--muted);
+        background: rgba(18, 26, 43, 0.6);
+      }
+      .winner {
+        border-color: rgba(73, 209, 125, 0.5);
+        box-shadow: 0 0 0 1px rgba(73, 209, 125, 0.25) inset;
+      }
+      .task {
+        margin-top: 10px;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+      .score-list {
+        display: grid;
+        gap: 8px;
+        margin-top: 10px;
+      }
+      .score-item {
+        padding: 10px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #0e1627;
+      }
+      a { color: var(--accent); }
+      @media (max-width: 980px) {
+        .app { grid-template-columns: 1fr; }
+        .sidebar { border-right: 0; border-bottom: 1px solid var(--border); max-height: 38vh; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="text/babel" data-presets="typescript,react">
+      type WorkspaceStatus = "pending" | "snapshotting" | "running" | "completed" | "failed";
+      type RunPhase = "preparing_workspaces" | "running_candidates" | "judging" | "applying" | "completed" | "failed";
+
+      type Score = { model: string; score: number; notes: string };
+      type Candidate = {
+        model: string;
+        workspaceLabel: string;
+        workspaceCwd?: string;
+        status: WorkspaceStatus;
+        startedAt?: string;
+        finishedAt?: string;
+        summary?: string;
+        diff?: string;
+        output?: string;
+        error?: string;
+      };
+      type Judge = {
+        model: string;
+        workspaceLabel: string;
+        workspaceCwd?: string;
+        status: WorkspaceStatus;
+        startedAt?: string;
+        finishedAt?: string;
+        reasoning?: string;
+        finalDiff?: string;
+        scores?: Score[];
+        error?: string;
+      };
+      type Run = {
+        id: string;
+        task: string;
+        cwd: string;
+        criteria: string[];
+        mergeMode: "best_only" | "merge_with_top";
+        phase: RunPhase;
+        startedAt: string;
+        updatedAt: string;
+        finishedAt?: string;
+        winnerModel?: string;
+        apply?: { ok: boolean; message: string };
+        workspaceParentDir: string;
+        workspacesKept: boolean;
+        candidates: Candidate[];
+        judge: Judge;
+        error?: string;
+      };
+      type MonitorState = {
+        activeRunId?: string;
+        runs: Run[];
+        server?: { port: number; url: string; startedAt: string };
+      };
+
+      const { useEffect, useMemo, useState } = React;
+
+      function formatDate(value?: string): string {
+        if (!value) return "—";
+        return new Date(value).toLocaleString();
+      }
+
+      function statusTone(status: WorkspaceStatus | RunPhase): string {
+        if (status === "completed") return "good";
+        if (status === "failed") return "bad";
+        if (status === "running" || status === "judging" || status === "applying") return "accent";
+        return "warn";
+      }
+
+      function App() {
+        const [state, setState] = useState<MonitorState>({ runs: [] });
+        const [selectedRunId, setSelectedRunId] = useState<string | undefined>(undefined);
+        const [error, setError] = useState<string | undefined>(undefined);
+        const [lastRefresh, setLastRefresh] = useState<string | undefined>(undefined);
+
+        useEffect(() => {
+          let cancelled = false;
+
+          const fetchState = async () => {
+            try {
+              const response = await fetch("/api/state", { cache: "no-store" });
+              if (!response.ok) throw new Error(`HTTP ${response.status}`);
+              const nextState = (await response.json()) as MonitorState;
+              if (cancelled) return;
+              setState(nextState);
+              setError(undefined);
+              setLastRefresh(new Date().toISOString());
+              setSelectedRunId((current) => current ?? nextState.activeRunId ?? nextState.runs.at(-1)?.id);
+            } catch (err) {
+              if (cancelled) return;
+              setError(err instanceof Error ? err.message : String(err));
+            }
+          };
+
+          fetchState();
+          const interval = window.setInterval(fetchState, 1200);
+          return () => {
+            cancelled = true;
+            window.clearInterval(interval);
+          };
+        }, []);
+
+        const sortedRuns = useMemo(() => [...state.runs].reverse(), [state.runs]);
+        const selectedRun = useMemo(
+          () => state.runs.find((run) => run.id === selectedRunId) ?? state.runs.at(-1),
+          [state.runs, selectedRunId],
+        );
+
+        return (
+          <div className="app">
+            <aside className="sidebar">
+              <h1 className="title">Model Fusion Monitor</h1>
+              <p className="subtitle">Live dashboard for candidate workspaces, judge reasoning, criteria, and final selection.</p>
+              <div className="panel">
+                <div className="row space-between">
+                  <span className="small">Server</span>
+                  <span className="badge accent">{state.server?.url ?? window.location.origin}</span>
+                </div>
+                <div className="small" style={{ marginTop: 8 }}>Last refresh: {formatDate(lastRefresh)}</div>
+                {error ? <div className="small" style={{ marginTop: 8, color: "#ff6b6b" }}>Refresh error: {error}</div> : null}
+              </div>
+
+              <div style={{ marginTop: 16 }}>
+                {sortedRuns.length === 0 ? (
+                  <div className="empty">No model fusion runs yet. Start one, then open this dashboard with <code>/model-fusion-monitor</code>.</div>
+                ) : (
+                  sortedRuns.map((run) => (
+                    <div
+                      key={run.id}
+                      className={`run-card ${selectedRun?.id === run.id ? "active" : ""}`}
+                      onClick={() => setSelectedRunId(run.id)}
+                    >
+                      <div className="row space-between">
+                        <h3>{run.id}</h3>
+                        <span className={`badge ${statusTone(run.phase)}`}>{run.phase}</span>
+                      </div>
+                      <div className="small">{formatDate(run.startedAt)}</div>
+                      <div className="small" style={{ marginTop: 8 }}>Winner: {run.winnerModel ?? "pending"}</div>
+                      <div className="small" style={{ marginTop: 4 }}>Task: {run.task.slice(0, 80)}{run.task.length > 80 ? "…" : ""}</div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </aside>
+
+            <main className="main">
+              {!selectedRun ? (
+                <div className="empty">Select a run to inspect its workspaces, criteria, scores, and chosen model.</div>
+              ) : (
+                <>
+                  <div className="panel">
+                    <div className="row space-between">
+                      <div>
+                        <h2 style={{ margin: 0 }}>Run {selectedRun.id}</h2>
+                        <div className="small">Started {formatDate(selectedRun.startedAt)} • Updated {formatDate(selectedRun.updatedAt)}</div>
+                      </div>
+                      <div className="row">
+                        <span className={`badge ${statusTone(selectedRun.phase)}`}>{selectedRun.phase}</span>
+                        {selectedRun.winnerModel ? <span className="badge good">winner {selectedRun.winnerModel}</span> : null}
+                        <span className="badge accent">{selectedRun.mergeMode}</span>
+                      </div>
+                    </div>
+                    <div className="task">{selectedRun.task}</div>
+                    <div className="row" style={{ marginTop: 12 }}>
+                      {selectedRun.criteria.map((criterion) => (
+                        <span key={criterion} className="badge">{criterion}</span>
+                      ))}
+                    </div>
+                    <div className="grid" style={{ marginTop: 16 }}>
+                      <div className="panel">
+                        <div className="small">Source cwd</div>
+                        <div>{selectedRun.cwd}</div>
+                      </div>
+                      <div className="panel">
+                        <div className="small">Workspace root</div>
+                        <div>{selectedRun.workspaceParentDir}</div>
+                        <div className="small" style={{ marginTop: 8 }}>
+                          {selectedRun.workspacesKept ? "Workspaces kept for debugging" : "Workspaces auto-cleaned after run"}
+                        </div>
+                      </div>
+                      <div className="panel">
+                        <div className="small">Patch apply</div>
+                        <div className={`badge ${selectedRun.apply?.ok ? "good" : selectedRun.apply ? "bad" : "warn"}`} style={{ marginTop: 8 }}>
+                          {selectedRun.apply ? (selectedRun.apply.ok ? "applied" : "apply failed") : "pending"}
+                        </div>
+                        {selectedRun.apply ? <div className="small" style={{ marginTop: 8 }}>{selectedRun.apply.message}</div> : null}
+                      </div>
+                    </div>
+                    {selectedRun.error ? <div style={{ marginTop: 12, color: "#ff6b6b" }}>Run error: {selectedRun.error}</div> : null}
+                  </div>
+
+                  <div className="panel">
+                    <div className="row space-between">
+                      <h2 style={{ margin: 0 }}>Judge</h2>
+                      <span className={`badge ${statusTone(selectedRun.judge.status)}`}>{selectedRun.judge.status}</span>
+                    </div>
+                    <div className="small" style={{ marginTop: 8 }}>Model: {selectedRun.judge.model}</div>
+                    <div className="small">Workspace: {selectedRun.judge.workspaceCwd ?? selectedRun.judge.workspaceLabel}</div>
+                    {selectedRun.judge.reasoning ? (
+                      <>
+                        <h3 style={{ marginBottom: 8 }}>Reasoning</h3>
+                        <div className="task">{selectedRun.judge.reasoning}</div>
+                      </>
+                    ) : null}
+                    {selectedRun.judge.scores?.length ? (
+                      <>
+                        <h3 style={{ marginBottom: 8 }}>Scores</h3>
+                        <div className="score-list">
+                          {selectedRun.judge.scores.map((score) => (
+                            <div key={score.model} className="score-item">
+                              <div className="row space-between">
+                                <strong>{score.model}</strong>
+                                <span className="badge accent">{score.score}</span>
+                              </div>
+                              <div className="small" style={{ marginTop: 6 }}>{score.notes}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    ) : null}
+                    {selectedRun.judge.error ? <div style={{ marginTop: 12, color: "#ff6b6b" }}>Judge error: {selectedRun.judge.error}</div> : null}
+                    {selectedRun.judge.finalDiff ? (
+                      <details>
+                        <summary>Final diff</summary>
+                        <pre>{selectedRun.judge.finalDiff}</pre>
+                      </details>
+                    ) : null}
+                  </div>
+
+                  <div className="candidate-grid">
+                    {selectedRun.candidates.map((candidate) => (
+                      <div key={candidate.model} className={`candidate-card ${selectedRun.winnerModel === candidate.model ? "winner" : ""}`}>
+                        <div className="row space-between">
+                          <h2 style={{ margin: 0, fontSize: 18 }}>{candidate.model}</h2>
+                          <div className="row">
+                            {selectedRun.winnerModel === candidate.model ? <span className="badge good">winner</span> : null}
+                            <span className={`badge ${statusTone(candidate.status)}`}>{candidate.status}</span>
+                          </div>
+                        </div>
+                        <div className="small" style={{ marginTop: 8 }}>Workspace: {candidate.workspaceCwd ?? candidate.workspaceLabel}</div>
+                        <div className="small">Started: {formatDate(candidate.startedAt)}</div>
+                        <div className="small">Finished: {formatDate(candidate.finishedAt)}</div>
+                        {candidate.summary ? (
+                          <>
+                            <h3 style={{ marginBottom: 8 }}>Summary</h3>
+                            <div className="task">{candidate.summary}</div>
+                          </>
+                        ) : null}
+                        {candidate.error ? <div style={{ marginTop: 12, color: "#ff6b6b" }}>Error: {candidate.error}</div> : null}
+                        {candidate.diff ? (
+                          <details>
+                            <summary>Candidate diff</summary>
+                            <pre>{candidate.diff}</pre>
+                          </details>
+                        ) : null}
+                        {candidate.output ? (
+                          <details>
+                            <summary>Full model output</summary>
+                            <pre>{candidate.output}</pre>
+                          </details>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </main>
+          </div>
+        );
+      }
+
+      ReactDOM.createRoot(document.getElementById("root")!).render(<App />);
+    </script>
+  </body>
+</html>

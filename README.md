@@ -7,6 +7,8 @@ A TypeScript extension for [pi.dev](https://pi.dev/) that runs one coding task a
 - Run **2+ candidate models** against one coding task in parallel.
 - Create a dedicated isolated workspace snapshot for each candidate model so parallel runs never touch the same files.
 - Run the judge in its own isolated workspace snapshot as well.
+- Stream live per-model/per-workspace progress updates during execution.
+- Expose a `/model-fusion-monitor` command that opens a local browser dashboard for manual monitoring.
 - Score outputs against user-provided criteria.
 - Use a **predefined judge model** to select best output.
 - Optional merge mode (`merge_with_top`) where the judge can synthesize a merged patch anchored on top-ranked output.
@@ -28,6 +30,10 @@ Once installed, you can request model fusion directly in chat, for example:
 - `/model-fusion add retries to the API client`
 
 If the request is missing required inputs, the agent should ask for the missing models, judge, or criteria before calling the tool.
+
+To manually monitor live runs in a browser, use:
+
+- `/model-fusion-monitor`
 
 ## Tool
 
@@ -69,6 +75,8 @@ Example call:
 - Each candidate model runs inside its own temporary workspace under `~/.pi/agent/extensions/model-fusion/workspaces/`.
 - When `cwd` is a git repo, workspaces are created from a detached `git worktree` snapshot plus current uncommitted tracked and untracked changes.
 - The judge also runs in an isolated workspace.
+- Live run state is persisted to `~/.pi/agent/extensions/model-fusion/monitor-state.json` and served by the browser monitor.
+- Use `/model-fusion-monitor` to open the local dashboard and inspect candidate workspaces, criteria, scores, reasoning, and the chosen winner.
 - Set `PI_MODEL_FUSION_KEEP_WORKSPACES=1` to keep workspaces for debugging instead of auto-cleaning them.
 - Judge must return a `<fusion>` JSON payload with a final unified diff (`finalDiff`).
 - If patch apply fails, output still includes ranking and rationale so the user can manually apply/adapt.
