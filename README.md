@@ -9,12 +9,23 @@ A TypeScript extension for [pi.dev](https://pi.dev/) that runs one coding task a
 - Use a **predefined judge model** to select best output.
 - Optional merge mode (`merge_with_top`) where the judge can synthesize a merged patch anchored on top-ranked output.
 - Applies resulting unified diff with `git apply --3way`.
+- Exposes `model_fusion` in pi's tool prompt so the agent can invoke it from natural-language requests.
+- Ships a `model-fusion` skill and `/model-fusion` prompt template for discoverability.
 
 ## Install
 
 ```bash
 pi install npm:pi-model-fusion
 ```
+
+## Prompt-driven usage
+
+Once installed, you can request model fusion directly in chat, for example:
+
+- `Use model fusion to add retries to the API client. Compare openai/gpt-5, anthropic/claude-sonnet-4, and google/gemini-2.5-pro. Judge with openai/gpt-5 on correctness, tests, and minimal risk.`
+- `/model-fusion add retries to the API client`
+
+If the request is missing required inputs, the agent should ask for the missing models, judge, or criteria before calling the tool.
 
 ## Tool
 

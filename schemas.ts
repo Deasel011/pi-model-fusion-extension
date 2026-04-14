@@ -1,3 +1,4 @@
+import { StringEnum } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
 
 export const ModelFusionParams = Type.Object({
@@ -11,9 +12,8 @@ export const ModelFusionParams = Type.Object({
     minItems: 1,
     description: "Ranking criteria used by the judge"
   }),
-  mergeMode: Type.Optional(Type.Union([
-    Type.Literal("best_only"),
-    Type.Literal("merge_with_top")
-  ])),
-  cwd: Type.Optional(Type.String({ minLength: 1 })),
+  mergeMode: Type.Optional(StringEnum(["best_only", "merge_with_top"] as const, {
+    description: "Whether to keep the best candidate as-is or let the judge merge improvements into the top-ranked patch"
+  })),
+  cwd: Type.Optional(Type.String({ minLength: 1, description: "Working directory used for candidate runs and patch apply" })),
 }, { additionalProperties: false });

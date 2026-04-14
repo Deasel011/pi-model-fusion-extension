@@ -40,6 +40,77 @@ function extractTaggedBlock(content: string, tag: string): string {
   return m ? m[1].trim() : "";
 }
 
+function toStringArray(value: unknown): string[] | undefined {
+  if (Array.isArray(value)) {
+    const normalized = value
+      .map((item) => typeof item === "string" ? item.trim() : "")
+      .filter(Boolean);
+    return normalized.length > 0 ? normalized : undefined;
+  }
+
+  if (typeof value === "string") {
+    const normalized = value
+      .split(/[\n,]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    return normalized.length > 0 ? normalized : undefined;
+  }
+
+  return undefined;
+}
+
+function normalizeMergeMode(value: unknown): "best_only" | "merge_with_top" | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return undefined;
+
+  if (["best_only", "best-only", "best", "winner_only", "winner-only"].includes(normalized)) {
+    return "best_only";
+  }
+
+  if (["merge_with_top", "merge-with-top", "merge", "merge_top", "merge-top", "combined"].includes(normalized)) {
+    return "merge_with_top";
+  }
+
+  return undefined;
+}
+
+function normalizeModelFusionArguments(args: unknown): unknown {
+  if (!args || typeof args !== "object") return args;
+
+  const input = args as {
+    task?: unknown;
+    candidateModels?: unknown;
+    candidateModel?: unknown;
+    models?: unknown;
+    judgeModel?: unknown;
+    judge?: unknown;
+    evaluatorModel?: unknown;
+    criteria?: unknown;
+    criterion?: unknown;
+    mergeMode?: unknown;
+    cwd?: unknown;
+  };
+
+  const candidateModels = toStringArray(input.candidateModels)
+    ?? toStringArray(input.models)
+    ?? toStringArray(input.candidateModel);
+  const criteria = toStringArray(input.criteria) ?? toStringArray(input.criterion);
+  const judgeModel = [input.judgeModel, input.judge, input.evaluatorModel].find((value): value is string =>
+    typeof value === "string" && value.trim().length > 0
+  )?.trim();
+  const mergeMode = normalizeMergeMode(input.mergeMode);
+
+  return {
+    ...(typeof input.task === "string" ? { task: input.task } : {}),
+    ...(candidateModels ? { candidateModels } : {}),
+    ...(judgeModel ? { judgeModel } : {}),
+    ...(criteria ? { criteria } : {}),
+    ...(mergeMode ? { mergeMode } : {}),
+    ...(typeof input.cwd === "string" ? { cwd: input.cwd } : {}),
+  };
+}
+
 async function runPiPrompt(prompt: string, model: string, cwd: string, signal?: AbortSignal): Promise<string> {
   const baseArgs = ["--no-session", "--model", model, prompt];
   const command = getPiSpawnCommand(baseArgs);
@@ -130,7 +201,16 @@ export default function registerModelFusionExtension(pi: ExtensionAPI): void {
     name: "model_fusion",
     label: "Model Fusion",
     description: "Run coding task against multiple models, rank by custom criteria, and apply best/merged patch.",
+    promptSnippet: "Run one coding task across multiple candidate models, judge them against explicit criteria, and apply the best or merged diff.",
+    promptGuidelines: [
+      "Use model_fusion when the user explicitly asks to compare, rank, vote on, or fuse multiple model-generated code changes.",
+      "Gather at least two candidate models, one judge model, and one or more scoring criteria before calling model_fusion.",
+      "If the user does not specify merge behavior, prefer best_only unless they explicitly want a synthesized merged patch.",
+    ],
     parameters: ModelFusionParams,
+    prepareArguments(args) {
+      return normalizeModelFusionArguments(args);
+    },
     async execute(_id, params, signal, _onUpdate, _ctx) {
       const cwd = path.resolve(params.cwd ?? process.cwd());
       const mergeMode = (params.mergeMode ?? "best_only") as "best_only" | "merge_with_top";
