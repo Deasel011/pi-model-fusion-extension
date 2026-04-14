@@ -5,6 +5,8 @@ A TypeScript extension for [pi.dev](https://pi.dev/) that runs one coding task a
 ## Features
 
 - Run **2+ candidate models** against one coding task in parallel.
+- Create a dedicated isolated workspace snapshot for each candidate model so parallel runs never touch the same files.
+- Run the judge in its own isolated workspace snapshot as well.
 - Score outputs against user-provided criteria.
 - Use a **predefined judge model** to select best output.
 - Optional merge mode (`merge_with_top`) where the judge can synthesize a merged patch anchored on top-ranked output.
@@ -38,7 +40,7 @@ Parameters:
 - `judgeModel` (string): model that performs ranking/selection.
 - `criteria` (string[]): scoring criteria.
 - `mergeMode` (`best_only` | `merge_with_top`): selection behavior.
-- `cwd` (optional string): working directory for model runs and patch apply.
+- `cwd` (optional string): source working directory to snapshot for model runs, and the directory where the final patch is applied.
 
 Example call:
 
@@ -64,6 +66,10 @@ Example call:
 ## Notes
 
 - Candidate models are instructed to output a `<diff>` block containing an applicable unified diff.
+- Each candidate model runs inside its own temporary workspace under `~/.pi/agent/extensions/model-fusion/workspaces/`.
+- When `cwd` is a git repo, workspaces are created from a detached `git worktree` snapshot plus current uncommitted tracked and untracked changes.
+- The judge also runs in an isolated workspace.
+- Set `PI_MODEL_FUSION_KEEP_WORKSPACES=1` to keep workspaces for debugging instead of auto-cleaning them.
 - Judge must return a `<fusion>` JSON payload with a final unified diff (`finalDiff`).
 - If patch apply fails, output still includes ranking and rationale so the user can manually apply/adapt.
 

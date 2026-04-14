@@ -15,5 +15,5 @@ export const ModelFusionParams = Type.Object({
   mergeMode: Type.Optional(StringEnum(["best_only", "merge_with_top"] as const, {
     description: "Whether to keep the best candidate as-is or let the judge merge improvements into the top-ranked patch"
   })),
-  cwd: Type.Optional(Type.String({ minLength: 1, description: "Working directory used for candidate runs and patch apply" })),
+  cwd: Type.Optional(Type.String({ minLength: 1, description: "Source working directory to snapshot for isolated model runs, and where the final patch is applied" })),
 }, { additionalProperties: false });

@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { spawn } from "node:child_process";
 import { execFileSync } from "node:child_process";
 import { Type, type Static } from "@sinclair/typebox";
-import { type ExtensionAPI, type ToolDefinition } from "@mariozechner/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI, type ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { ModelFusionParams } from "./schemas.ts";
 import { getPiSpawnCommand } from "./pi-spawn.ts";
@@ -13,6 +13,7 @@ interface CandidateRun {
   model: string;
   output: string;
   diff: string;
+  workspaceCwd: string;
 }
 
 interface JudgeDecision {
@@ -20,6 +21,12 @@ interface JudgeDecision {
   reasoning: string;
   scores: Array<{ model: string; score: number; notes: string }>;
   finalDiff: string;
+}
+
+interface IsolatedWorkspace {
+  label: string;
+  root: string;
+  cwd: string;
 }
 
 const Details = Type.Object({
@@ -33,6 +40,10 @@ const Details = Type.Object({
     notes: Type.String(),
   })),
 });
+
+const WORKSPACE_STORAGE_DIR = path.join(getAgentDir(), "extensions", "model-fusion", "workspaces");
+const KEEP_WORKSPACES = ["1", "true", "yes"].includes((process.env.PI_MODEL_FUSION_KEEP_WORKSPACES ?? "").trim().toLowerCase());
+const EXEC_MAX_BUFFER = 50 * 1024 * 1024;
 
 function extractTaggedBlock(content: string, tag: string): string {
   const rx = new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, "i");
@@ -142,6 +153,7 @@ async function runPiPrompt(prompt: string, model: string, cwd: string, signal?: 
 function buildCandidatePrompt(task: string): string {
   return [
     "You are producing a code-change candidate for an automated model-fusion pipeline.",
+    "You are running inside an isolated per-model workspace snapshot. You may inspect and edit files there freely, but your final answer must only contain the requested XML tags.",
     "Return your full answer in two XML tags:",
     "<summary>short explanation of your approach</summary>",
     "<diff>unified git diff only, with no markdown fences</diff>",
@@ -157,11 +169,12 @@ function buildJudgePrompt(input: {
   candidates: CandidateRun[];
 }): string {
   const candidateText = input.candidates
-    .map((c, i) => `Candidate ${i + 1} (${c.model})\nSUMMARY/OUTPUT:\n${c.output}\nDIFF:\n${c.diff}`)
+    .map((c, i) => `Candidate ${i + 1} (${c.model})\nWORKSPACE:\n${c.workspaceCwd}\nSUMMARY/OUTPUT:\n${c.output}\nDIFF:\n${c.diff}`)
     .join("\n\n---\n\n");
 
   return [
     "You are the model-fusion judge. Evaluate candidate code patches for a coding task.",
+    "You are also running in an isolated workspace snapshot; do not assume any candidate changed the shared project tree.",
     `Merge mode: ${input.mergeMode}. If merge_with_top, synthesize the best combined patch anchored on the top-ranked solution.`,
     "Return ONLY this XML payload:",
     "<fusion>{\"winnerModel\":\"...\",\"reasoning\":\"...\",\"scores\":[{\"model\":\"...\",\"score\":0-100,\"notes\":\"...\"}],\"finalDiff\":\"unified diff\"}</fusion>",
@@ -196,6 +209,125 @@ function applyDiff(diff: string, cwd: string): { ok: boolean; message: string } 
   }
 }
 
+function sanitizeWorkspaceSegment(value: string): string {
+  const sanitized = value
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+  return sanitized || "workspace";
+}
+
+function ensureDirectory(dir: string): void {
+  fs.mkdirSync(dir, { recursive: true });
+}
+
+function writePatchFile(diff: string, prefix: string): string {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const patchPath = path.join(tmpDir, "patch.diff");
+  fs.writeFileSync(patchPath, diff, "utf-8");
+  return patchPath;
+}
+
+function getGitRepoRoot(cwd: string): string | undefined {
+  try {
+    return execFileSync("git", ["rev-parse", "--show-toplevel"], {
+      cwd,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: EXEC_MAX_BUFFER,
+    }).trim();
+  } catch {
+    return undefined;
+  }
+}
+
+function createWorkspaceParentDir(): string {
+  ensureDirectory(WORKSPACE_STORAGE_DIR);
+  const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+  const parentDir = path.join(WORKSPACE_STORAGE_DIR, runId);
+  ensureDirectory(parentDir);
+  return parentDir;
+}
+
+function createWorkspaceFromGitSnapshot(sourceCwd: string, workspaceRoot: string): IsolatedWorkspace {
+  const repoRoot = getGitRepoRoot(sourceCwd);
+  if (!repoRoot) throw new Error(`Not a git repository: ${sourceCwd}`);
+
+  const relativeCwd = path.relative(repoRoot, sourceCwd);
+  execFileSync("git", ["worktree", "add", "--detach", "--force", workspaceRoot, "HEAD"], {
+    cwd: repoRoot,
+    stdio: "pipe",
+    maxBuffer: EXEC_MAX_BUFFER,
+  });
+
+  const trackedPatch = execFileSync("git", ["diff", "--binary", "HEAD"], {
+    cwd: repoRoot,
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: EXEC_MAX_BUFFER,
+  });
+
+  if (trackedPatch.trim()) {
+    const patchPath = writePatchFile(trackedPatch, "pi-model-fusion-snapshot-");
+    execFileSync("git", ["apply", "--whitespace=nowarn", patchPath], {
+      cwd: workspaceRoot,
+      stdio: "pipe",
+      maxBuffer: EXEC_MAX_BUFFER,
+    });
+  }
+
+  const untrackedBuffer = execFileSync("git", ["ls-files", "--others", "--exclude-standard", "-z"], {
+    cwd: repoRoot,
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: EXEC_MAX_BUFFER,
+  });
+  const untrackedFiles = String(untrackedBuffer)
+    .split("\0")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  for (const relativeFile of untrackedFiles) {
+    const sourcePath = path.join(repoRoot, relativeFile);
+    const targetPath = path.join(workspaceRoot, relativeFile);
+    ensureDirectory(path.dirname(targetPath));
+    fs.cpSync(sourcePath, targetPath, { recursive: true, force: true, dereference: false });
+  }
+
+  return {
+    label: path.basename(workspaceRoot),
+    root: workspaceRoot,
+    cwd: path.join(workspaceRoot, relativeCwd),
+  };
+}
+
+function createWorkspaceByCopy(sourceCwd: string, workspaceRoot: string): IsolatedWorkspace {
+  const repoRoot = getGitRepoRoot(sourceCwd);
+  const copyRoot = repoRoot ?? sourceCwd;
+  const relativeCwd = repoRoot ? path.relative(repoRoot, sourceCwd) : "";
+
+  fs.cpSync(copyRoot, workspaceRoot, { recursive: true, force: true, dereference: false });
+  return {
+    label: path.basename(workspaceRoot),
+    root: workspaceRoot,
+    cwd: path.join(workspaceRoot, relativeCwd),
+  };
+}
+
+function createIsolatedWorkspace(sourceCwd: string, workspaceParentDir: string, label: string): IsolatedWorkspace {
+  const workspaceRoot = path.join(workspaceParentDir, sanitizeWorkspaceSegment(label));
+  try {
+    return createWorkspaceFromGitSnapshot(sourceCwd, workspaceRoot);
+  } catch {
+    fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    return createWorkspaceByCopy(sourceCwd, workspaceRoot);
+  }
+}
+
+function cleanupWorkspaceParentDir(workspaceParentDir: string): void {
+  if (KEEP_WORKSPACES) return;
+  fs.rmSync(workspaceParentDir, { recursive: true, force: true });
+}
+
 export default function registerModelFusionExtension(pi: ExtensionAPI): void {
   const tool: ToolDefinition<typeof ModelFusionParams, Static<typeof Details>> = {
     name: "model_fusion",
@@ -214,49 +346,65 @@ export default function registerModelFusionExtension(pi: ExtensionAPI): void {
     async execute(_id, params, signal, _onUpdate, _ctx) {
       const cwd = path.resolve(params.cwd ?? process.cwd());
       const mergeMode = (params.mergeMode ?? "best_only") as "best_only" | "merge_with_top";
-      const candidates = await Promise.all(params.candidateModels.map(async (model) => {
-        const output = await runPiPrompt(buildCandidatePrompt(params.task), model, cwd, signal);
-        const diff = extractTaggedBlock(output, "diff");
-        if (!diff) throw new Error(`Model ${model} did not return a <diff> block.`);
-        return { model, output, diff } satisfies CandidateRun;
-      }));
+      const workspaceParentDir = createWorkspaceParentDir();
 
-      const judgeOutput = await runPiPrompt(buildJudgePrompt({
-        task: params.task,
-        criteria: params.criteria,
-        mergeMode,
-        candidates,
-      }), params.judgeModel, cwd, signal);
+      try {
+        const candidateWorkspaces = params.candidateModels.map((model, index) => ({
+          model,
+          workspace: createIsolatedWorkspace(cwd, workspaceParentDir, `candidate-${index + 1}-${model}`),
+        }));
 
-      const decision = parseJudgeDecision(judgeOutput);
-      const apply = applyDiff(decision.finalDiff, cwd);
+        const candidates = await Promise.all(candidateWorkspaces.map(async ({ model, workspace }) => {
+          const output = await runPiPrompt(buildCandidatePrompt(params.task), model, workspace.cwd, signal);
+          const diff = extractTaggedBlock(output, "diff");
+          if (!diff) throw new Error(`Model ${model} did not return a <diff> block.`);
+          return { model, output, diff, workspaceCwd: workspace.cwd } satisfies CandidateRun;
+        }));
 
-      return {
-        content: [{
-          type: "text",
-          text: [
-            `Winner: ${decision.winnerModel}`,
-            `Judge model: ${params.judgeModel}`,
-            `Merge mode: ${mergeMode}`,
-            `Applied: ${apply.ok ? "yes" : "no"}`,
-            "",
-            "Reasoning:",
-            decision.reasoning,
-            "",
-            "Scores:",
-            ...decision.scores.map((s) => `- ${s.model}: ${s.score} (${s.notes})`),
-            "",
-            `Apply result: ${apply.message}`,
-          ].join("\n"),
-        }],
-        details: {
-          winnerModel: decision.winnerModel,
+        const judgeWorkspace = createIsolatedWorkspace(cwd, workspaceParentDir, `judge-${params.judgeModel}`);
+        const judgeOutput = await runPiPrompt(buildJudgePrompt({
+          task: params.task,
+          criteria: params.criteria,
           mergeMode,
-          applied: apply.ok,
-          judgeModel: params.judgeModel,
-          scores: decision.scores,
-        },
-      };
+          candidates,
+        }), params.judgeModel, judgeWorkspace.cwd, signal);
+
+        const decision = parseJudgeDecision(judgeOutput);
+        const apply = applyDiff(decision.finalDiff, cwd);
+        const workspaceInfo = KEEP_WORKSPACES
+          ? `Workspace snapshots kept at ${workspaceParentDir}`
+          : `Workspace snapshots were created under ${workspaceParentDir} and cleaned up automatically`;
+
+        return {
+          content: [{
+            type: "text",
+            text: [
+              `Winner: ${decision.winnerModel}`,
+              `Judge model: ${params.judgeModel}`,
+              `Merge mode: ${mergeMode}`,
+              `Applied: ${apply.ok ? "yes" : "no"}`,
+              "",
+              "Reasoning:",
+              decision.reasoning,
+              "",
+              "Scores:",
+              ...decision.scores.map((s) => `- ${s.model}: ${s.score} (${s.notes})`),
+              "",
+              `Apply result: ${apply.message}`,
+              workspaceInfo,
+            ].join("\n"),
+          }],
+          details: {
+            winnerModel: decision.winnerModel,
+            mergeMode,
+            applied: apply.ok,
+            judgeModel: params.judgeModel,
+            scores: decision.scores,
+          },
+        };
+      } finally {
+        cleanupWorkspaceParentDir(workspaceParentDir);
+      }
     },
     renderCall(args, theme) {
       return new Text(
