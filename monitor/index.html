@@ -177,79 +177,30 @@
   </head>
   <body>
     <div id="root"></div>
-    <script type="text/babel" data-presets="typescript,react">
-      type WorkspaceStatus = "pending" | "snapshotting" | "running" | "completed" | "failed";
-      type RunPhase = "preparing_workspaces" | "running_candidates" | "judging" | "applying" | "completed" | "failed";
-
-      type CriterionScore = { criterion: string; score: number; notes: string };
-      type Score = { model: string; score: number; notes: string; criterionScores?: CriterionScore[] };
-      type Candidate = {
-        model: string;
-        workspaceLabel: string;
-        workspaceCwd?: string;
-        status: WorkspaceStatus;
-        startedAt?: string;
-        finishedAt?: string;
-        summary?: string;
-        diff?: string;
-        output?: string;
-        error?: string;
-      };
-      type Judge = {
-        model: string;
-        workspaceLabel: string;
-        workspaceCwd?: string;
-        status: WorkspaceStatus;
-        startedAt?: string;
-        finishedAt?: string;
-        reasoning?: string;
-        finalDiff?: string;
-        scores?: Score[];
-        error?: string;
-      };
-      type Run = {
-        id: string;
-        task: string;
-        cwd: string;
-        criteria: string[];
-        mergeMode: "best_only" | "merge_with_top";
-        phase: RunPhase;
-        startedAt: string;
-        updatedAt: string;
-        finishedAt?: string;
-        winnerModel?: string;
-        apply?: { ok: boolean; message: string };
-        workspaceParentDir: string;
-        workspacesKept: boolean;
-        candidates: Candidate[];
-        judge: Judge;
-        error?: string;
-      };
-      type MonitorState = {
-        activeRunId?: string;
-        runs: Run[];
-        server?: { port: number; url: string; startedAt: string };
-      };
-
+    <script type="text/babel" data-presets="react">
       const { useEffect, useMemo, useState } = React;
 
-      function formatDate(value?: string): string {
+      function formatDate(value) {
         if (!value) return "—";
         return new Date(value).toLocaleString();
       }
 
-      function statusTone(status: WorkspaceStatus | RunPhase): string {
+      function statusTone(status) {
         if (status === "completed") return "good";
         if (status === "failed") return "bad";
         if (status === "running" || status === "judging" || status === "applying") return "accent";
         return "warn";
       }
 
+      function getLastItem(items) {
+        return Array.isArray(items) && items.length > 0 ? items[items.length - 1] : undefined;
+      }
+
       function App() {
-        const [state, setState] = useState<MonitorState>({ runs: [] });
-        const [selectedRunId, setSelectedRunId] = useState<string | undefined>(undefined);
-        const [error, setError] = useState<string | undefined>(undefined);
-        const [lastRefresh, setLastRefresh] = useState<string | undefined>(undefined);
+        const [state, setState] = useState({ runs: [] });
+        const [selectedRunId, setSelectedRunId] = useState(undefined);
+        const [error, setError] = useState(undefined);
+        const [lastRefresh, setLastRefresh] = useState(undefined);
 
         useEffect(() => {
           let cancelled = false;
@@ -258,12 +209,12 @@
             try {
               const response = await fetch("/api/state", { cache: "no-store" });
               if (!response.ok) throw new Error(`HTTP ${response.status}`);
-              const nextState = (await response.json()) as MonitorState;
+              const nextState = await response.json();
               if (cancelled) return;
               setState(nextState);
               setError(undefined);
               setLastRefresh(new Date().toISOString());
-              setSelectedRunId((current) => current ?? nextState.activeRunId ?? nextState.runs.at(-1)?.id);
+              setSelectedRunId((current) => current ?? nextState.activeRunId ?? getLastItem(nextState.runs)?.id);
             } catch (err) {
               if (cancelled) return;
               setError(err instanceof Error ? err.message : String(err));
@@ -280,7 +231,7 @@
 
         const sortedRuns = useMemo(() => [...state.runs].reverse(), [state.runs]);
         const selectedRun = useMemo(
-          () => state.runs.find((run) => run.id === selectedRunId) ?? state.runs.at(-1),
+          () => state.runs.find((run) => run.id === selectedRunId) ?? getLastItem(state.runs),
           [state.runs, selectedRunId],
         );
 
@@ -460,7 +411,8 @@
         );
       }
 
-      ReactDOM.createRoot(document.getElementById("root")!).render(<App />);
+      const rootElement = document.getElementById("root");
+      ReactDOM.createRoot(rootElement).render(<App />);
     </script>
   </body>
 </html>
