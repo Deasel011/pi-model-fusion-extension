@@ -1,0 +1,45 @@
+#!/bin/sh
+#
+# post-commit hook: apply the semver bump determined by commit-msg,
+# then amend the commit to include the updated package.json.
+#
+# Uses a flag file to prevent infinite recursion from the amend.
+
+GIT_DIR=$(git rev-parse --git-dir)
+BUMP_FILE="$GIT_DIR/.version-bump"
+
+# Nothing to do if commit-msg didn't leave a bump file
+if [ ! -f "$BUMP_FILE" ]; then
+  exit 0
+fi
+
+BUMP=$(cat "$BUMP_FILE")
+rm -f "$BUMP_FILE"
+
+# Guard: skip if already inside an amend from this hook
+if [ "$SKIP_VERSION_BUMP" = "1" ]; then
+  exit 0
+fi
+
+# Get current version
+OLD_VERSION=$(node -p "require('./package.json').version" 2>/dev/null)
+if [ -z "$OLD_VERSION" ]; then
+  echo "⚠️  Could not read version from package.json, skipping bump."
+  exit 0
+fi
+
+# Bump version
+npm version "$BUMP" --no-git-tag-version > /dev/null 2>&1
+NEW_VERSION=$(node -p "require('./package.json').version")
+
+if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
+  exit 0
+fi
+
+echo "📦 Auto-bumped version: $OLD_VERSION → $NEW_VERSION ($BUMP)"
+
+# Stage and amend the commit (with guard to prevent recursion)
+git add package.json
+SKIP_VERSION_BUMP=1 git commit --amend --no-edit --no-verify > /dev/null 2>&1
+
+exit 0
