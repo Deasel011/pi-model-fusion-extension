@@ -46,10 +46,32 @@ interface IsolatedWorkspace {
   cwd: string;
 }
 
+interface GitSnapshot {
+  repoRoot: string;
+  relativeCwd: string;
+  trackedPatch: string;
+  untrackedFiles: string[];
+}
+
+interface BranchArtifactInfo {
+  branchName?: string;
+  branchWorktreeRoot?: string;
+  branchWorktreeCwd?: string;
+  branchCommit?: string;
+  branchError?: string;
+}
+
+interface MaterializedBranchResult {
+  branchName: string;
+  worktreeRoot: string;
+  worktreeCwd: string;
+  commitSha?: string;
+}
+
 type WorkspaceStatus = "pending" | "snapshotting" | "running" | "completed" | "failed" | "blocked";
 type RunPhase = "preparing_workspaces" | "running_candidates" | "judging" | "applying" | "completed" | "failed" | "needs_user_input";
 
-interface CandidateMonitorEntry {
+interface CandidateMonitorEntry extends BranchArtifactInfo {
   model: string;
   workspaceLabel: string;
   workspaceCwd?: string;
@@ -88,9 +110,11 @@ interface FusionMonitorRun {
   winnerModel?: string;
   apply?: { ok: boolean; message: string };
   workspaceParentDir: string;
+  branchWorktreeParentDir?: string;
   workspacesKept: boolean;
   candidates: CandidateMonitorEntry[];
   judge: JudgeMonitorEntry;
+  finalVersion?: BranchArtifactInfo;
   error?: string;
 }
 
@@ -117,6 +141,8 @@ const Details = Type.Object({
   mergeMode: Type.String(),
   applied: Type.Optional(Type.Boolean()),
   judgeModel: Type.String(),
+  finalBranchName: Type.Optional(Type.String()),
+  finalBranchWorktreeCwd: Type.Optional(Type.String()),
   scores: Type.Optional(Type.Array(Type.Object({
     model: Type.String(),
     score: Type.Number(),
@@ -294,17 +320,98 @@ function parseJudgeDecision(output: string): JudgeDecision {
   return parsed;
 }
 
-function applyDiff(diff: string, cwd: string): { ok: boolean; message: string } {
+function applyDiffOrThrow(diff: string, cwd: string): string {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-model-fusion-"));
   const patchPath = path.join(tmpDir, "selected.patch");
   fs.writeFileSync(patchPath, diff, "utf-8");
+  execFileSync("git", ["apply", "--3way", "--whitespace=nowarn", patchPath], {
+    cwd,
+    stdio: "pipe",
+    maxBuffer: EXEC_MAX_BUFFER,
+  });
+  return patchPath;
+}
+
+function applyDiff(diff: string, cwd: string): { ok: boolean; message: string } {
   try {
-    execFileSync("git", ["apply", "--3way", "--whitespace=nowarn", patchPath], { cwd, stdio: "pipe" });
+    const patchPath = applyDiffOrThrow(diff, cwd);
     return { ok: true, message: `Applied patch from ${patchPath}` };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = toErrorMessage(error);
     return { ok: false, message };
   }
+}
+
+function getHeadCommit(cwd: string): string {
+  return execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd,
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: EXEC_MAX_BUFFER,
+  }).trim();
+}
+
+function sanitizeBranchSegment(value: string): string {
+  return sanitizeWorkspaceSegment(value).replace(/\//g, "-");
+}
+
+function buildFusionBranchName(runId: string, label: string): string {
+  return `pi-model-fusion/${sanitizeBranchSegment(runId)}/${sanitizeBranchSegment(label)}`;
+}
+
+function commitWorktreeChanges(worktreeRoot: string, message: string): string | undefined {
+  execFileSync("git", ["add", "-A"], {
+    cwd: worktreeRoot,
+    stdio: "pipe",
+    maxBuffer: EXEC_MAX_BUFFER,
+  });
+
+  const status = execFileSync("git", ["status", "--porcelain"], {
+    cwd: worktreeRoot,
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: EXEC_MAX_BUFFER,
+  }).trim();
+
+  if (!status) return getHeadCommit(worktreeRoot);
+
+  execFileSync("git", ["-c", "user.name=pi-model-fusion", "-c", "user.email=pi-model-fusion@local", "commit", "-m", message], {
+    cwd: worktreeRoot,
+    stdio: "pipe",
+    maxBuffer: EXEC_MAX_BUFFER,
+  });
+
+  return getHeadCommit(worktreeRoot);
+}
+
+function materializeDiffToBranch(
+  snapshot: GitSnapshot,
+  branchWorktreeParentDir: string,
+  runId: string,
+  label: string,
+  diff: string,
+  commitMessage: string,
+): MaterializedBranchResult {
+  const branchName = buildFusionBranchName(runId, label);
+  const worktreeRoot = path.join(branchWorktreeParentDir, sanitizeWorkspaceSegment(label));
+
+  execFileSync("git", ["worktree", "add", "--force", "-b", branchName, worktreeRoot, "HEAD"], {
+    cwd: snapshot.repoRoot,
+    stdio: "pipe",
+    maxBuffer: EXEC_MAX_BUFFER,
+  });
+
+  applyGitSnapshot(snapshot, worktreeRoot);
+  const worktreeCwd = path.join(worktreeRoot, snapshot.relativeCwd);
+  applyDiffOrThrow(diff, worktreeCwd);
+  const commitSha = commitWorktreeChanges(worktreeRoot, commitMessage);
+
+  return {
+    branchName,
+    worktreeRoot,
+    worktreeCwd,
+    commitSha,
+  };
 }
 
 function shortHash(value: string): string {
@@ -348,26 +455,45 @@ function createWorkspaceParentDir(): string {
   return fs.mkdtempSync(path.join(WORKSPACE_STORAGE_DIR, "r-"));
 }
 
-function createWorkspaceFromGitSnapshot(sourceCwd: string, workspaceRoot: string): IsolatedWorkspace {
-  const repoRoot = getGitRepoRoot(sourceCwd);
-  if (!repoRoot) throw new Error(`Not a git repository: ${sourceCwd}`);
+function createBranchWorktreeParentDir(runId: string): string {
+  const root = path.join(WORKSPACE_STORAGE_DIR, "branches");
+  ensureDirectory(root);
+  return fs.mkdtempSync(path.join(root, `${sanitizeWorkspaceSegment(runId)}-`));
+}
 
-  const relativeCwd = path.relative(repoRoot, sourceCwd);
-  execFileSync("git", ["worktree", "add", "--detach", "--force", workspaceRoot, "HEAD"], {
+function listUntrackedFiles(repoRoot: string): string[] {
+  const untrackedBuffer = execFileSync("git", ["ls-files", "--others", "--exclude-standard", "-z"], {
     cwd: repoRoot,
-    stdio: "pipe",
-    maxBuffer: EXEC_MAX_BUFFER,
-  });
-
-  const trackedPatch = execFileSync("git", ["diff", "--binary", "HEAD"], {
-    cwd: repoRoot,
-    encoding: "utf-8",
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: EXEC_MAX_BUFFER,
   });
 
-  if (trackedPatch.trim()) {
-    const patchPath = writePatchFile(trackedPatch, "pi-model-fusion-snapshot-");
+  return String(untrackedBuffer)
+    .split("\0")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function captureGitSnapshot(sourceCwd: string): GitSnapshot {
+  const repoRoot = getGitRepoRoot(sourceCwd);
+  if (!repoRoot) throw new Error(`Not a git repository: ${sourceCwd}`);
+
+  return {
+    repoRoot,
+    relativeCwd: path.relative(repoRoot, sourceCwd),
+    trackedPatch: execFileSync("git", ["diff", "--binary", "HEAD"], {
+      cwd: repoRoot,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: EXEC_MAX_BUFFER,
+    }),
+    untrackedFiles: listUntrackedFiles(repoRoot),
+  };
+}
+
+function applyGitSnapshot(snapshot: GitSnapshot, workspaceRoot: string): void {
+  if (snapshot.trackedPatch.trim()) {
+    const patchPath = writePatchFile(snapshot.trackedPatch, "pi-model-fusion-snapshot-");
     execFileSync("git", ["apply", "--whitespace=nowarn", patchPath], {
       cwd: workspaceRoot,
       stdio: "pipe",
@@ -375,27 +501,28 @@ function createWorkspaceFromGitSnapshot(sourceCwd: string, workspaceRoot: string
     });
   }
 
-  const untrackedBuffer = execFileSync("git", ["ls-files", "--others", "--exclude-standard", "-z"], {
-    cwd: repoRoot,
-    stdio: ["ignore", "pipe", "pipe"],
-    maxBuffer: EXEC_MAX_BUFFER,
-  });
-  const untrackedFiles = String(untrackedBuffer)
-    .split("\0")
-    .map((item) => item.trim())
-    .filter(Boolean);
-
-  for (const relativeFile of untrackedFiles) {
-    const sourcePath = path.join(repoRoot, relativeFile);
+  for (const relativeFile of snapshot.untrackedFiles) {
+    const sourcePath = path.join(snapshot.repoRoot, relativeFile);
     const targetPath = path.join(workspaceRoot, relativeFile);
     ensureDirectory(path.dirname(targetPath));
     fs.cpSync(sourcePath, targetPath, { recursive: true, force: true, dereference: false });
   }
+}
+
+function createWorkspaceFromGitSnapshot(sourceCwd: string, workspaceRoot: string): IsolatedWorkspace {
+  const snapshot = captureGitSnapshot(sourceCwd);
+  execFileSync("git", ["worktree", "add", "--detach", "--force", workspaceRoot, "HEAD"], {
+    cwd: snapshot.repoRoot,
+    stdio: "pipe",
+    maxBuffer: EXEC_MAX_BUFFER,
+  });
+
+  applyGitSnapshot(snapshot, workspaceRoot);
 
   return {
     label: path.basename(workspaceRoot),
     root: workspaceRoot,
-    cwd: path.join(workspaceRoot, relativeCwd),
+    cwd: path.join(workspaceRoot, snapshot.relativeCwd),
   };
 }
 
@@ -593,11 +720,15 @@ function buildProgressText(run: FusionMonitorRun): string {
     ...run.candidates.map((candidate) => {
       const workspace = candidate.workspaceCwd ? ` @ ${candidate.workspaceCwd}` : "";
       const detail = candidate.error ? ` — ${candidate.error}` : candidate.summary ? ` — ${candidate.summary}` : "";
-      return `- ${candidate.model}: ${candidate.status}${workspace}${detail}`;
+      const branch = candidate.branchName ? ` | branch ${candidate.branchName}${candidate.branchWorktreeCwd ? ` @ ${candidate.branchWorktreeCwd}` : ""}` : "";
+      const branchError = candidate.branchError ? ` | branch error ${candidate.branchError}` : "";
+      return `- ${candidate.model}: ${candidate.status}${workspace}${detail}${branch}${branchError}`;
     }),
     "",
     `Judge (${run.judge.model}): ${run.judge.status}${run.judge.workspaceCwd ? ` @ ${run.judge.workspaceCwd}` : ""}${run.judge.error ? ` — ${run.judge.error}` : ""}`,
     ...(run.winnerModel ? [`Winner: ${run.winnerModel}`] : []),
+    ...(run.finalVersion?.branchName ? [`Final branch: ${run.finalVersion.branchName}${run.finalVersion.branchWorktreeCwd ? ` @ ${run.finalVersion.branchWorktreeCwd}` : ""}`] : []),
+    ...(run.finalVersion?.branchError ? [`Final branch error: ${run.finalVersion.branchError}`] : []),
     ...(run.apply ? [`Patch apply: ${run.apply.ok ? "ok" : "failed"} — ${run.apply.message}`] : []),
     ...(run.error ? [`Error: ${run.error}`] : []),
   ].join("\n");
@@ -736,6 +867,9 @@ export default function registerModelFusionExtension(pi: ExtensionAPI): void {
       const mergeMode = (params.mergeMode ?? "best_only") as "best_only" | "merge_with_top";
       const workspaceParentDir = createWorkspaceParentDir();
       const runId = generateRunId();
+      const repoRoot = getGitRepoRoot(cwd);
+      let gitSnapshot: GitSnapshot | undefined;
+      let branchWorktreeParentDir: string | undefined;
       const initialRun: FusionMonitorRun = {
         id: runId,
         task: params.task,
@@ -746,6 +880,7 @@ export default function registerModelFusionExtension(pi: ExtensionAPI): void {
         startedAt: nowIso(),
         updatedAt: nowIso(),
         workspaceParentDir,
+        branchWorktreeParentDir,
         workspacesKept: KEEP_WORKSPACES,
         candidates: params.candidateModels.map((model, index) => ({
           model,
@@ -763,6 +898,15 @@ export default function registerModelFusionExtension(pi: ExtensionAPI): void {
       publishProgress(runId, onUpdate, ctx);
 
       try {
+        if (repoRoot) {
+          gitSnapshot = captureGitSnapshot(cwd);
+          branchWorktreeParentDir = createBranchWorktreeParentDir(runId);
+          mutateRun(runId, (run) => {
+            run.branchWorktreeParentDir = branchWorktreeParentDir;
+          });
+          publishProgress(runId, onUpdate, ctx);
+        }
+
         const candidateWorkspaces: Array<{ model: string; workspace: IsolatedWorkspace }> = [];
         for (const [index, model] of params.candidateModels.entries()) {
           mutateRun(runId, (run) => {
@@ -830,6 +974,38 @@ export default function registerModelFusionExtension(pi: ExtensionAPI): void {
           }
         }));
 
+        if (gitSnapshot && branchWorktreeParentDir) {
+          for (const [index, candidate] of candidates.entries()) {
+            try {
+              const materialized = materializeDiffToBranch(
+                gitSnapshot,
+                branchWorktreeParentDir,
+                runId,
+                `candidate-${index + 1}-${candidate.model}`,
+                candidate.diff,
+                `model_fusion: candidate ${candidate.model} (${runId})`,
+              );
+
+              mutateRun(runId, (run) => {
+                const entry = run.candidates[index];
+                if (!entry) return;
+                entry.branchName = materialized.branchName;
+                entry.branchWorktreeRoot = materialized.worktreeRoot;
+                entry.branchWorktreeCwd = materialized.worktreeCwd;
+                entry.branchCommit = materialized.commitSha;
+                entry.branchError = undefined;
+              });
+            } catch (error) {
+              mutateRun(runId, (run) => {
+                const entry = run.candidates[index];
+                if (!entry) return;
+                entry.branchError = toErrorMessage(error);
+              });
+            }
+            publishProgress(runId, onUpdate, ctx);
+          }
+        }
+
         mutateRun(runId, (run) => {
           run.phase = "judging";
           run.judge.status = "snapshotting";
@@ -863,6 +1039,36 @@ export default function registerModelFusionExtension(pi: ExtensionAPI): void {
         });
         publishProgress(runId, onUpdate, ctx);
 
+        if (gitSnapshot && branchWorktreeParentDir) {
+          try {
+            const finalVersion = materializeDiffToBranch(
+              gitSnapshot,
+              branchWorktreeParentDir,
+              runId,
+              `final-${decision.winnerModel}`,
+              decision.finalDiff,
+              `model_fusion: final selection ${decision.winnerModel} (${runId})`,
+            );
+
+            mutateRun(runId, (run) => {
+              run.finalVersion = {
+                branchName: finalVersion.branchName,
+                branchWorktreeRoot: finalVersion.worktreeRoot,
+                branchWorktreeCwd: finalVersion.worktreeCwd,
+                branchCommit: finalVersion.commitSha,
+              };
+            });
+          } catch (error) {
+            mutateRun(runId, (run) => {
+              run.finalVersion = {
+                ...(run.finalVersion ?? {}),
+                branchError: toErrorMessage(error),
+              };
+            });
+          }
+          publishProgress(runId, onUpdate, ctx);
+        }
+
         const apply = applyDiff(decision.finalDiff, cwd);
         mutateRun(runId, (run) => {
           run.apply = apply;
@@ -874,6 +1080,29 @@ export default function registerModelFusionExtension(pi: ExtensionAPI): void {
         const workspaceInfo = KEEP_WORKSPACES
           ? `Workspace snapshots kept at ${workspaceParentDir}`
           : `Workspace snapshots were created under ${workspaceParentDir} and cleaned up automatically`;
+        const runSnapshot = getRunSnapshot(runId);
+        const candidateBranchLines = runSnapshot?.candidates.flatMap((candidate) => {
+          if (candidate.branchName) {
+            const location = candidate.branchWorktreeCwd ?? candidate.branchWorktreeRoot ?? "(worktree path unavailable)";
+            const commit = candidate.branchCommit ? ` (${candidate.branchCommit})` : "";
+            return [`- ${candidate.model}: ${candidate.branchName} @ ${location}${commit}`];
+          }
+          if (candidate.branchError) {
+            return [`- ${candidate.model}: branch materialization failed (${candidate.branchError})`];
+          }
+          return [];
+        }) ?? [];
+        const finalBranchLines = runSnapshot?.finalVersion?.branchName
+          ? [
+            `Final branch: ${runSnapshot.finalVersion.branchName}`,
+            `Final worktree: ${runSnapshot.finalVersion.branchWorktreeCwd ?? runSnapshot.finalVersion.branchWorktreeRoot ?? "(worktree path unavailable)"}`,
+            ...(runSnapshot.finalVersion.branchCommit ? [`Final commit: ${runSnapshot.finalVersion.branchCommit}`] : []),
+          ]
+          : runSnapshot?.finalVersion?.branchError
+            ? [`Final branch error: ${runSnapshot.finalVersion.branchError}`]
+            : gitSnapshot
+              ? ["Final branch: not materialized"]
+              : ["Final branch: unavailable outside git repositories"];
         const monitorUrl = await ensureMonitorServer();
 
         if (ctx.hasUI) {
@@ -889,6 +1118,9 @@ export default function registerModelFusionExtension(pi: ExtensionAPI): void {
               `Merge mode: ${mergeMode}`,
               `Applied: ${apply.ok ? "yes" : "no"}`,
               `Monitor: ${monitorUrl}`,
+              "",
+              ...finalBranchLines,
+              ...(candidateBranchLines.length > 0 ? ["", "Candidate branches:", ...candidateBranchLines] : []),
               "",
               "Reasoning:",
               decision.reasoning,
@@ -909,6 +1141,8 @@ export default function registerModelFusionExtension(pi: ExtensionAPI): void {
             mergeMode,
             applied: apply.ok,
             judgeModel: params.judgeModel,
+            finalBranchName: runSnapshot?.finalVersion?.branchName,
+            finalBranchWorktreeCwd: runSnapshot?.finalVersion?.branchWorktreeCwd,
             scores: decision.scores,
           },
         };

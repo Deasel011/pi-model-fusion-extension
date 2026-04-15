@@ -240,7 +240,7 @@
           <div className="app">
             <aside className="sidebar">
               <h1 className="title">Model Fusion Monitor</h1>
-              <p className="subtitle">Live dashboard for candidate workspaces, judge reasoning, criteria, and final selection.</p>
+              <p className="subtitle">Live dashboard for candidate workspaces, branch worktrees, judge reasoning, criteria, and final selection.</p>
               <div className="panel">
                 <div className="row space-between">
                   <span className="small">Server</span>
@@ -275,7 +275,7 @@
 
             <main className="main">
               {!selectedRun ? (
-                <div className="empty">Select a run to inspect its workspaces, criteria, scores, and chosen model.</div>
+                <div className="empty">Select a run to inspect its workspaces, branch worktrees, criteria, scores, and chosen model.</div>
               ) : (
                 <>
                   <div className="panel">
@@ -307,6 +307,12 @@
                         <div className="small" style={{ marginTop: 8 }}>
                           {selectedRun.workspacesKept ? "Workspaces kept for debugging" : "Workspaces auto-cleaned after run"}
                         </div>
+                        {selectedRun.branchWorktreeParentDir ? (
+                          <>
+                            <div className="small" style={{ marginTop: 12 }}>Branch worktree root</div>
+                            <div>{selectedRun.branchWorktreeParentDir}</div>
+                          </>
+                        ) : null}
                       </div>
                       <div className="panel">
                         <div className="small">Patch apply</div>
@@ -370,6 +376,26 @@
                     ) : null}
                   </div>
 
+                  <div className="panel">
+                    <div className="row space-between">
+                      <h2 style={{ margin: 0 }}>Final branch</h2>
+                      <span className={`badge ${selectedRun.finalVersion?.branchName ? "good" : selectedRun.finalVersion?.branchError ? "bad" : "warn"}`}>
+                        {selectedRun.finalVersion?.branchName ? "materialized" : selectedRun.finalVersion?.branchError ? "failed" : "pending"}
+                      </span>
+                    </div>
+                    {selectedRun.finalVersion?.branchName ? (
+                      <>
+                        <div className="small" style={{ marginTop: 8 }}>Branch: {selectedRun.finalVersion.branchName}</div>
+                        <div className="small">Worktree: {selectedRun.finalVersion.branchWorktreeCwd ?? selectedRun.finalVersion.branchWorktreeRoot ?? "—"}</div>
+                        {selectedRun.finalVersion.branchCommit ? <div className="small">Commit: {selectedRun.finalVersion.branchCommit}</div> : null}
+                      </>
+                    ) : selectedRun.finalVersion?.branchError ? (
+                      <div style={{ marginTop: 12, color: "#ff6b6b" }}>{selectedRun.finalVersion.branchError}</div>
+                    ) : (
+                      <div className="small" style={{ marginTop: 8 }}>Available for git-backed runs once the final diff is chosen.</div>
+                    )}
+                  </div>
+
                   <div className="candidate-grid">
                     {selectedRun.candidates.map((candidate) => (
                       <div key={candidate.model} className={`candidate-card ${selectedRun.winnerModel === candidate.model ? "winner" : ""}`}>
@@ -381,6 +407,9 @@
                           </div>
                         </div>
                         <div className="small" style={{ marginTop: 8 }}>Workspace: {candidate.workspaceCwd ?? candidate.workspaceLabel}</div>
+                        {candidate.branchName ? <div className="small">Branch: {candidate.branchName}</div> : null}
+                        {candidate.branchWorktreeCwd || candidate.branchWorktreeRoot ? <div className="small">Branch worktree: {candidate.branchWorktreeCwd ?? candidate.branchWorktreeRoot}</div> : null}
+                        {candidate.branchCommit ? <div className="small">Branch commit: {candidate.branchCommit}</div> : null}
                         <div className="small">Started: {formatDate(candidate.startedAt)}</div>
                         <div className="small">Finished: {formatDate(candidate.finishedAt)}</div>
                         {candidate.summary ? (
@@ -390,6 +419,7 @@
                           </>
                         ) : null}
                         {candidate.error ? <div style={{ marginTop: 12, color: "#ff6b6b" }}>Error: {candidate.error}</div> : null}
+                        {candidate.branchError ? <div style={{ marginTop: 12, color: "#ff6b6b" }}>Branch error: {candidate.branchError}</div> : null}
                         {candidate.diff ? (
                           <details>
                             <summary>Candidate diff</summary>
