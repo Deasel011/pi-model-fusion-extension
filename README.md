@@ -117,7 +117,3 @@ git branch -D $(git branch --list 'pi-model-fusion/*' | tr -d ' ')
 - Live run state is persisted to `~/.pi/agent/extensions/model-fusion/monitor-state.json`.
 - The monitor dashboard shows branch names with copy-pasteable git commands for each candidate and the final selection.
 - If patch apply fails, output still includes ranking, reasoning, and branch references so you can apply manually.
-
-## Based on
-
-This extension follows the architecture and runtime-spawn pattern from [`pi-subagents`](https://github.com/nicobailon/pi-subagents), adapted for model fusion workflows.
