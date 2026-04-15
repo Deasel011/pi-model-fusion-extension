@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Type, type Static } from "@sinclair/typebox";
 import { getAgentDir, type ExtensionAPI, type ToolDefinition } from "@mariozechner/pi-coding-agent";
@@ -45,8 +46,8 @@ interface IsolatedWorkspace {
   cwd: string;
 }
 
-type WorkspaceStatus = "pending" | "snapshotting" | "running" | "completed" | "failed";
-type RunPhase = "preparing_workspaces" | "running_candidates" | "judging" | "applying" | "completed" | "failed";
+type WorkspaceStatus = "pending" | "snapshotting" | "running" | "completed" | "failed" | "blocked";
+type RunPhase = "preparing_workspaces" | "running_candidates" | "judging" | "applying" | "completed" | "failed" | "needs_user_input";
 
 interface CandidateMonitorEntry {
   model: string;
@@ -111,11 +112,12 @@ interface MonitorRuntime {
 }
 
 const Details = Type.Object({
-  winnerModel: Type.String(),
+  status: Type.Union([Type.Literal("completed"), Type.Literal("needs_user_input")]),
+  winnerModel: Type.Optional(Type.String()),
   mergeMode: Type.String(),
-  applied: Type.Boolean(),
+  applied: Type.Optional(Type.Boolean()),
   judgeModel: Type.String(),
-  scores: Type.Array(Type.Object({
+  scores: Type.Optional(Type.Array(Type.Object({
     model: Type.String(),
     score: Type.Number(),
     notes: Type.String(),
@@ -124,13 +126,16 @@ const Details = Type.Object({
       score: Type.Number(),
       notes: Type.String(),
     }))),
-  })),
+  }))),
+  recoverable: Type.Optional(Type.Boolean()),
+  error: Type.Optional(Type.String()),
+  userPrompt: Type.Optional(Type.String()),
 });
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const MONITOR_APP_PATH = path.join(MODULE_DIR, "monitor", "index.html");
 const EXTENSION_STORAGE_DIR = path.join(getAgentDir(), "extensions", "model-fusion");
-const WORKSPACE_STORAGE_DIR = path.join(EXTENSION_STORAGE_DIR, "workspaces");
+const WORKSPACE_STORAGE_DIR = (process.env.PI_MODEL_FUSION_WORKSPACE_DIR ?? "").trim() || path.join(os.tmpdir(), "pi-mf");
 const MONITOR_STATE_PATH = path.join(EXTENSION_STORAGE_DIR, "monitor-state.json");
 const KEEP_WORKSPACES = ["1", "true", "yes"].includes((process.env.PI_MODEL_FUSION_KEEP_WORKSPACES ?? "").trim().toLowerCase());
 const EXEC_MAX_BUFFER = 50 * 1024 * 1024;
@@ -302,12 +307,16 @@ function applyDiff(diff: string, cwd: string): { ok: boolean; message: string } 
   }
 }
 
+function shortHash(value: string): string {
+  return createHash("sha1").update(value).digest("hex").slice(0, 10);
+}
+
 function sanitizeWorkspaceSegment(value: string): string {
   const sanitized = value
     .replace(/[^a-zA-Z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80);
-  return sanitized || "workspace";
+    .replace(/^-+|-+$/g, "");
+  const compact = sanitized.slice(0, 20).replace(/[-._]+$/g, "");
+  return `${compact || "workspace"}-${shortHash(value)}`;
 }
 
 function ensureDirectory(dir: string): void {
@@ -336,10 +345,7 @@ function getGitRepoRoot(cwd: string): string | undefined {
 
 function createWorkspaceParentDir(): string {
   ensureDirectory(WORKSPACE_STORAGE_DIR);
-  const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
-  const parentDir = path.join(WORKSPACE_STORAGE_DIR, runId);
-  ensureDirectory(parentDir);
-  return parentDir;
+  return fs.mkdtempSync(path.join(WORKSPACE_STORAGE_DIR, "r-"));
 }
 
 function createWorkspaceFromGitSnapshot(sourceCwd: string, workspaceRoot: string): IsolatedWorkspace {
@@ -410,9 +416,15 @@ function createIsolatedWorkspace(sourceCwd: string, workspaceParentDir: string, 
   const workspaceRoot = path.join(workspaceParentDir, sanitizeWorkspaceSegment(label));
   try {
     return createWorkspaceFromGitSnapshot(sourceCwd, workspaceRoot);
-  } catch {
+  } catch (snapshotError) {
     fs.rmSync(workspaceRoot, { recursive: true, force: true });
-    return createWorkspaceByCopy(sourceCwd, workspaceRoot);
+    try {
+      return createWorkspaceByCopy(sourceCwd, workspaceRoot);
+    } catch (copyError) {
+      const snapshotMessage = toErrorMessage(snapshotError);
+      const copyMessage = toErrorMessage(copyError);
+      throw new Error(`Unable to create isolated workspace. git snapshot error: ${snapshotMessage}. copy fallback error: ${copyMessage}`);
+    }
   }
 }
 
@@ -430,7 +442,64 @@ function generateRunId(): string {
 }
 
 function toErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  if (error instanceof Error) {
+    const extra = ["stderr", "stdout"]
+      .map((key) => {
+        const value = (error as Error & { stderr?: unknown; stdout?: unknown })[key as "stderr" | "stdout"];
+        if (typeof value === "string") return value.trim();
+        if (Buffer.isBuffer(value)) return value.toString("utf-8").trim();
+        return "";
+      })
+      .filter(Boolean);
+    return [error.message, ...extra].filter(Boolean).join("\n").trim();
+  }
+  return String(error);
+}
+
+function isPathLengthWorkspaceError(error: unknown): boolean {
+  const message = toErrorMessage(error).toLowerCase();
+  return ["enametoolong", "filename too long", "path too long", "file name too long"].some((term) => message.includes(term));
+}
+
+function buildWorkspaceRecoveryPrompt(cwd: string, error: unknown): string {
+  const repoRoot = getGitRepoRoot(cwd) ?? cwd;
+  const workspaceRoot = WORKSPACE_STORAGE_DIR;
+  const message = toErrorMessage(error);
+  return [
+    "Model fusion could not create its isolated workspace because the effective path was too long.",
+    `Repo: ${repoRoot}`,
+    `Workspace root: ${workspaceRoot}`,
+    "",
+    "Please ask the user how they want to recover. Suggested options:",
+    `1. Retry after setting PI_MODEL_FUSION_WORKSPACE_DIR to a very short path (for example ${path.join(os.tmpdir(), "mf")}).`,
+    "2. Retry from a shorter project path (for example, move/clone the repo closer to the drive root).",
+    "3. On Windows git setups, enable long paths if their environment supports it.",
+    "",
+    "After the user chooses an option, rerun the same model_fusion request.",
+    "",
+    `Error: ${message}`,
+  ].join("\n");
+}
+
+function markRunAsNeedsUserInput(runId: string, error: unknown): void {
+  const errorMessage = toErrorMessage(error);
+  mutateRun(runId, (run) => {
+    run.phase = "needs_user_input";
+    run.finishedAt = nowIso();
+    run.error = errorMessage;
+    for (const candidate of run.candidates) {
+      if (candidate.status === "pending" || candidate.status === "snapshotting") {
+        candidate.status = "blocked";
+        candidate.finishedAt = nowIso();
+        candidate.error = errorMessage;
+      }
+    }
+    if (run.judge.status === "pending" || run.judge.status === "snapshotting") {
+      run.judge.status = "blocked";
+      run.judge.finishedAt = nowIso();
+      run.judge.error = errorMessage;
+    }
+  });
 }
 
 function getMonitorRuntime(): MonitorRuntime {
@@ -508,6 +577,7 @@ function setMonitorServerInfo(info: MonitorServerInfo): void {
 function buildProgressText(run: FusionMonitorRun): string {
   const completedCandidates = run.candidates.filter((candidate) => candidate.status === "completed").length;
   const failedCandidates = run.candidates.filter((candidate) => candidate.status === "failed").length;
+  const blockedCandidates = run.candidates.filter((candidate) => candidate.status === "blocked").length;
 
   return [
     `Run: ${run.id}`,
@@ -517,6 +587,7 @@ function buildProgressText(run: FusionMonitorRun): string {
     `Criteria: ${run.criteria.join(", ")}`,
     `Candidates completed: ${completedCandidates}/${run.candidates.length}`,
     ...(failedCandidates > 0 ? [`Candidates failed: ${failedCandidates}`] : []),
+    ...(blockedCandidates > 0 ? [`Candidates blocked: ${blockedCandidates}`] : []),
     "",
     "Candidate workspaces:",
     ...run.candidates.map((candidate) => {
@@ -535,7 +606,8 @@ function buildProgressText(run: FusionMonitorRun): string {
 function buildFooterStatus(run: FusionMonitorRun): string {
   const completedCandidates = run.candidates.filter((candidate) => candidate.status === "completed").length;
   const runningCandidates = run.candidates.filter((candidate) => candidate.status === "running").length;
-  return `model_fusion ${run.phase} | candidates ${completedCandidates}/${run.candidates.length} done | running ${runningCandidates} | judge ${run.judge.status}`;
+  const blockedCandidates = run.candidates.filter((candidate) => candidate.status === "blocked").length;
+  return `model_fusion ${run.phase} | candidates ${completedCandidates}/${run.candidates.length} done | running ${runningCandidates} | blocked ${blockedCandidates} | judge ${run.judge.status}`;
 }
 
 function publishProgress(
@@ -832,6 +904,7 @@ export default function registerModelFusionExtension(pi: ExtensionAPI): void {
             ].join("\n"),
           }],
           details: {
+            status: "completed",
             winnerModel: decision.winnerModel,
             mergeMode,
             applied: apply.ok,
@@ -840,6 +913,31 @@ export default function registerModelFusionExtension(pi: ExtensionAPI): void {
           },
         };
       } catch (error) {
+        if (isPathLengthWorkspaceError(error)) {
+          const userPrompt = buildWorkspaceRecoveryPrompt(cwd, error);
+          markRunAsNeedsUserInput(runId, error);
+          publishProgress(runId, onUpdate, ctx);
+          if (ctx.hasUI) {
+            ctx.ui.setStatus("model-fusion", "model_fusion needs user input | workspace path too long");
+          }
+
+          const monitorUrl = await ensureMonitorServer();
+          return {
+            content: [{
+              type: "text",
+              text: `${userPrompt}\nMonitor: ${monitorUrl}`,
+            }],
+            details: {
+              status: "needs_user_input",
+              mergeMode,
+              judgeModel: params.judgeModel,
+              recoverable: true,
+              error: toErrorMessage(error),
+              userPrompt,
+            },
+          };
+        }
+
         mutateRun(runId, (run) => {
           run.phase = "failed";
           run.finishedAt = nowIso();

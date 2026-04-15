@@ -188,6 +188,7 @@
       function statusTone(status) {
         if (status === "completed") return "good";
         if (status === "failed") return "bad";
+        if (status === "needs_user_input" || status === "blocked") return "warn";
         if (status === "running" || status === "judging" || status === "applying") return "accent";
         return "warn";
       }

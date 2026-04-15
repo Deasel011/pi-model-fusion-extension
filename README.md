@@ -73,12 +73,14 @@ Example call:
 ## Notes
 
 - Candidate models are instructed to output a `<diff>` block containing an applicable unified diff.
-- Each candidate model runs inside its own temporary workspace under `~/.pi/agent/extensions/model-fusion/workspaces/`.
+- Each candidate model runs inside its own temporary workspace under the OS temp directory by default (using a short `pi-mf` path to avoid Windows path-length issues).
 - When `cwd` is a git repo, workspaces are created from a detached `git worktree` snapshot plus current uncommitted tracked and untracked changes.
 - The judge also runs in an isolated workspace.
 - Live run state is persisted to `~/.pi/agent/extensions/model-fusion/monitor-state.json` and served by the browser monitor.
 - Use `/model-fusion-monitor` to open the local dashboard and inspect candidate workspaces, criteria, per-criterion scores, reasoning, and the chosen winner.
 - Set `PI_MODEL_FUSION_KEEP_WORKSPACES=1` to keep workspaces for debugging instead of auto-cleaning them.
+- Set `PI_MODEL_FUSION_WORKSPACE_DIR=/short/path` to override the workspace root if you want a custom location.
+- If workspace creation still hits path-length errors, `model_fusion` now returns a recoverable `needs_user_input` result so the agent can ask the user how to proceed instead of leaving the run in a hard-failed state.
 - Judge must return a `<fusion>` JSON payload with a final unified diff (`finalDiff`).
 - If patch apply fails, output still includes ranking and rationale so the user can manually apply/adapt.
 
