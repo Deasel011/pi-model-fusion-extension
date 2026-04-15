@@ -5,18 +5,16 @@ A TypeScript extension for [pi.dev](https://pi.dev/) that runs one coding task a
 ## Features
 
 - Run **2+ candidate models** against one coding task in parallel.
-- Create a dedicated isolated workspace snapshot for each candidate model so parallel runs never touch the same files.
-- Materialize each candidate model's diff into its own git worktree branch when `cwd` is inside a git repo.
-- Run the judge in its own isolated workspace snapshot as well.
-- Materialize the final selected diff into its own git worktree branch so it can serve as a PR-ready follow-up branch.
-- Stream live per-model/per-workspace progress updates during execution.
+- **Branch-first architecture**: each candidate runs in its own git branch worktree — no separate "workspace" + "branch materialization" steps.
+- Diffs are **captured directly from git** after candidate execution (not parsed from model output), ensuring accuracy.
+- Judge reads real git-captured diffs for reliable evaluation.
+- For `best_only` mode, the winner's branch diff is used directly — no round-trip through the judge's diff output.
+- For `merge_with_top` mode, the judge synthesizes a merged diff, materialized to its own final branch.
+- All branches persist after the run for easy inspection: `git diff main..<branch>`, `git log <branch>`, `git checkout <branch>`.
+- Stream live per-model progress updates during execution.
 - Show judge scoring with per-criterion breakdowns for each candidate model.
-- Expose a `/model-fusion-monitor` command that opens a local browser dashboard for manual monitoring.
-- Score outputs against user-provided criteria.
-- Use a **predefined judge model** to select best output.
-- Optional merge mode (`merge_with_top`) where the judge can synthesize a merged patch anchored on top-ranked output.
-- Applies resulting unified diff with `git apply --3way` to the original `cwd`, while also preserving a separate final branch/worktree copy for review.
-- Exposes `model_fusion` in pi's tool prompt so the agent can invoke it from natural-language requests.
+- Expose a `/model-fusion-monitor` command that opens a local browser dashboard.
+- Applies resulting diff with `git apply --3way` to the original `cwd`.
 - Ships a `model-fusion` skill and `/model-fusion` prompt template for discoverability.
 
 ## Install
@@ -27,14 +25,12 @@ pi install git:https://github.com/Deasel011/pi-model-fusion-extension/
 
 ## Prompt-driven usage
 
-Once installed, you can request model fusion directly in chat, for example:
+Once installed, you can request model fusion directly in chat:
 
 - `Use model fusion to add retries to the API client. Compare openai/gpt-5, anthropic/claude-sonnet-4, and google/gemini-2.5-pro. Judge with openai/gpt-5 on correctness, tests, and minimal risk.`
 - `/model-fusion add retries to the API client`
 
-If the request is missing required inputs, the agent should ask for the missing models, judge, or criteria before calling the tool.
-
-To manually monitor live runs in a browser, use:
+To monitor live runs in a browser:
 
 - `/model-fusion-monitor`
 
@@ -49,7 +45,7 @@ Parameters:
 - `judgeModel` (string): model that performs ranking/selection.
 - `criteria` (string[]): scoring criteria.
 - `mergeMode` (`best_only` | `merge_with_top`): selection behavior.
-- `cwd` (optional string): source working directory to snapshot for model runs, and the directory where the final patch is applied.
+- `cwd` (optional string): source working directory (must be inside a git repo).
 
 Example call:
 
@@ -72,21 +68,55 @@ Example call:
 }
 ```
 
+## Architecture
+
+### Branch-first workflow
+
+```
+1. Capture uncommitted state (tracked diff + untracked files)
+2. For each candidate (in parallel):
+   a. git worktree add -b pi-model-fusion/<runId>/candidate-<model> <path> HEAD
+   b. Apply uncommitted state → commit as "base"
+   c. Run pi (model makes file edits directly)
+   d. git add -A && git commit → capture diff from git
+3. Judge runs in its own branch worktree, reads git-captured diffs
+4. Final branch:
+   - best_only → winner's existing branch
+   - merge_with_top → new branch with judge's synthesized diff
+5. Apply final diff to original cwd
+6. Cleanup worktree directories (branches remain)
+```
+
+Each candidate's changes are real git commits on named branches. The monitor and judge both read diffs from git, not from parsed model output.
+
+### Inspecting results
+
+After a run, all branches remain in your repo:
+
+```bash
+# List all fusion branches
+git branch --list 'pi-model-fusion/*'
+
+# Compare a candidate's changes
+git diff main..pi-model-fusion/<runId>/candidate-1-<model>
+
+# Check out the final result
+git checkout pi-model-fusion/<runId>/final-<model>
+
+# Clean up old branches
+git branch -D $(git branch --list 'pi-model-fusion/*' | tr -d ' ')
+```
+
 ## Notes
 
-- Candidate models are instructed to output a `<diff>` block containing an applicable unified diff.
-- Each candidate model runs inside its own temporary workspace under the OS temp directory by default (using a short `pi-mf` path to avoid Windows path-length issues).
-- When `cwd` is a git repo, execution workspaces are created from a detached `git worktree` snapshot plus current uncommitted tracked and untracked changes.
-- Candidate outputs are also materialized into per-model git branches/worktrees under a persistent branch-worktree directory, with one branch per model.
-- The judge also runs in an isolated workspace.
-- The final selected diff is materialized into its own git branch/worktree as well, so you can use that branch later as a PR candidate.
-- Live run state is persisted to `~/.pi/agent/extensions/model-fusion/monitor-state.json` and served by the browser monitor.
-- Use `/model-fusion-monitor` to open the local dashboard and inspect candidate workspaces, candidate/final branch worktrees, criteria, per-criterion scores, reasoning, and the chosen winner.
-- Set `PI_MODEL_FUSION_KEEP_WORKSPACES=1` to keep the temporary execution workspaces for debugging instead of auto-cleaning them. Materialized branch worktrees are kept so you can inspect them later.
-- Set `PI_MODEL_FUSION_WORKSPACE_DIR=/short/path` to override the workspace root if you want a custom location.
-- If workspace creation still hits path-length errors, `model_fusion` now returns a recoverable `needs_user_input` result so the agent can ask the user how to proceed instead of leaving the run in a hard-failed state.
-- Judge must return a `<fusion>` JSON payload with a final unified diff (`finalDiff`).
-- If patch apply fails, output still includes ranking and rationale so the user can manually apply/adapt.
+- **Requires git**: `cwd` must be inside a git repository.
+- Candidate models are instructed to make file edits directly. Diffs are captured from git after execution (not from `<diff>` tags in output).
+- Each candidate branch has two commits: "base" (uncommitted state) + "candidate changes".
+- Worktree directories are cleaned up automatically after the run. Set `PI_MODEL_FUSION_KEEP_WORKSPACES=1` to keep them.
+- Set `PI_MODEL_FUSION_WORKSPACE_DIR=/short/path` to override the worktree root (useful for Windows path-length issues).
+- Live run state is persisted to `~/.pi/agent/extensions/model-fusion/monitor-state.json`.
+- The monitor dashboard shows branch names with copy-pasteable git commands for each candidate and the final selection.
+- If patch apply fails, output still includes ranking, reasoning, and branch references so you can apply manually.
 
 ## Based on
 

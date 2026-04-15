@@ -43,18 +43,9 @@
         padding: 20px;
         overflow: auto;
       }
-      .title {
-        margin: 0 0 4px;
-        font-size: 24px;
-      }
-      .subtitle {
-        margin: 0 0 16px;
-        color: var(--muted);
-        font-size: 14px;
-      }
-      .run-card,
-      .panel,
-      .candidate-card {
+      .title { margin: 0 0 4px; font-size: 24px; }
+      .subtitle { margin: 0 0 16px; color: var(--muted); font-size: 14px; }
+      .run-card, .panel, .candidate-card {
         background: rgba(18, 26, 43, 0.95);
         border: 1px solid var(--border);
         border-radius: 14px;
@@ -68,17 +59,11 @@
       }
       .run-card:hover { transform: translateY(-1px); border-color: #40609b; }
       .run-card.active { border-color: var(--accent); }
-      .run-card h3 {
-        margin: 0 0 8px;
-        font-size: 14px;
-      }
-      .small {
-        font-size: 12px;
-        color: var(--muted);
-      }
+      .run-card h3 { margin: 0 0 8px; font-size: 14px; }
+      .small { font-size: 12px; color: var(--muted); }
       .grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
         gap: 16px;
       }
       .candidate-grid {
@@ -86,15 +71,8 @@
         grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
         gap: 16px;
       }
-      .row {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        flex-wrap: wrap;
-      }
-      .space-between {
-        justify-content: space-between;
-      }
+      .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .space-between { justify-content: space-between; }
       .badge {
         display: inline-flex;
         align-items: center;
@@ -124,11 +102,17 @@
         font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         font-size: 12px;
       }
-      details summary {
+      code.inline {
+        background: #0a1120;
+        border: 1px solid #22304d;
+        border-radius: 6px;
+        padding: 2px 6px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
         cursor: pointer;
-        color: var(--accent);
-        margin-top: 8px;
+        user-select: all;
       }
+      details summary { cursor: pointer; color: var(--accent); margin-top: 8px; }
       .empty {
         border: 1px dashed var(--border);
         border-radius: 14px;
@@ -141,33 +125,28 @@
         border-color: rgba(73, 209, 125, 0.5);
         box-shadow: 0 0 0 1px rgba(73, 209, 125, 0.25) inset;
       }
-      .task {
-        margin-top: 10px;
-        font-size: 14px;
-        line-height: 1.5;
-      }
-      .score-list {
-        display: grid;
-        gap: 8px;
-        margin-top: 10px;
-      }
+      .task { margin-top: 10px; font-size: 14px; line-height: 1.5; }
+      .score-list { display: grid; gap: 8px; margin-top: 10px; }
       .score-item {
         padding: 10px;
         border: 1px solid var(--border);
         border-radius: 10px;
         background: #0e1627;
       }
-      .criterion-list {
-        display: grid;
-        gap: 8px;
-        margin-top: 10px;
-      }
+      .criterion-list { display: grid; gap: 8px; margin-top: 10px; }
       .criterion-item {
         padding: 8px 10px;
         border: 1px solid #22304d;
         border-radius: 10px;
         background: #0a1120;
       }
+      .git-commands {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-top: 10px;
+      }
+      .git-commands .small { margin-bottom: 2px; }
       a { color: var(--accent); }
       @media (max-width: 980px) {
         .app { grid-template-columns: 1fr; }
@@ -188,13 +167,33 @@
       function statusTone(status) {
         if (status === "completed") return "good";
         if (status === "failed") return "bad";
-        if (status === "needs_user_input" || status === "blocked") return "warn";
         if (status === "running" || status === "judging" || status === "applying") return "accent";
         return "warn";
       }
 
       function getLastItem(items) {
         return Array.isArray(items) && items.length > 0 ? items[items.length - 1] : undefined;
+      }
+
+      function BranchRef({ name, label }) {
+        if (!name) return null;
+        return (
+          <div className="small" style={{ marginTop: 4 }}>
+            {label || "Branch"}: <code className="inline">{name}</code>
+          </div>
+        );
+      }
+
+      function GitCommands({ branchName, repoRoot }) {
+        if (!branchName) return null;
+        return (
+          <div className="git-commands">
+            <div className="small" style={{ fontWeight: 600, color: "var(--accent)" }}>Inspect branch:</div>
+            <code className="inline">git diff main..{branchName}</code>
+            <code className="inline">git log {branchName} --oneline</code>
+            <code className="inline">git checkout {branchName}</code>
+          </div>
+        );
       }
 
       function App() {
@@ -205,7 +204,6 @@
 
         useEffect(() => {
           let cancelled = false;
-
           const fetchState = async () => {
             try {
               const response = await fetch("/api/state", { cache: "no-store" });
@@ -221,18 +219,14 @@
               setError(err instanceof Error ? err.message : String(err));
             }
           };
-
           fetchState();
           const interval = window.setInterval(fetchState, 1200);
-          return () => {
-            cancelled = true;
-            window.clearInterval(interval);
-          };
+          return () => { cancelled = true; window.clearInterval(interval); };
         }, []);
 
         const sortedRuns = useMemo(() => [...state.runs].reverse(), [state.runs]);
         const selectedRun = useMemo(
-          () => state.runs.find((run) => run.id === selectedRunId) ?? getLastItem(state.runs),
+          () => state.runs.find((r) => r.id === selectedRunId) ?? getLastItem(state.runs),
           [state.runs, selectedRunId],
         );
 
@@ -240,7 +234,7 @@
           <div className="app">
             <aside className="sidebar">
               <h1 className="title">Model Fusion Monitor</h1>
-              <p className="subtitle">Live dashboard for candidate workspaces, branch worktrees, judge reasoning, criteria, and final selection.</p>
+              <p className="subtitle">Branch-based dashboard — candidate branches, judge scores, and final selection.</p>
               <div className="panel">
                 <div className="row space-between">
                   <span className="small">Server</span>
@@ -252,14 +246,10 @@
 
               <div style={{ marginTop: 16 }}>
                 {sortedRuns.length === 0 ? (
-                  <div className="empty">No model fusion runs yet. Start one, then open this dashboard with <code>/model-fusion-monitor</code>.</div>
+                  <div className="empty">No runs yet. Start one, then open this dashboard with <code>/model-fusion-monitor</code>.</div>
                 ) : (
                   sortedRuns.map((run) => (
-                    <div
-                      key={run.id}
-                      className={`run-card ${selectedRun?.id === run.id ? "active" : ""}`}
-                      onClick={() => setSelectedRunId(run.id)}
-                    >
+                    <div key={run.id} className={`run-card ${selectedRun?.id === run.id ? "active" : ""}`} onClick={() => setSelectedRunId(run.id)}>
                       <div className="row space-between">
                         <h3>{run.id}</h3>
                         <span className={`badge ${statusTone(run.phase)}`}>{run.phase}</span>
@@ -275,9 +265,10 @@
 
             <main className="main">
               {!selectedRun ? (
-                <div className="empty">Select a run to inspect its workspaces, branch worktrees, criteria, scores, and chosen model.</div>
+                <div className="empty">Select a run to inspect branches, scores, and the chosen model.</div>
               ) : (
                 <>
+                  {/* Run overview */}
                   <div className="panel">
                     <div className="row space-between">
                       <div>
@@ -292,27 +283,26 @@
                     </div>
                     <div className="task">{selectedRun.task}</div>
                     <div className="row" style={{ marginTop: 12 }}>
-                      {selectedRun.criteria.map((criterion) => (
-                        <span key={criterion} className="badge">{criterion}</span>
-                      ))}
+                      {selectedRun.criteria.map((c) => <span key={c} className="badge">{c}</span>)}
                     </div>
                     <div className="grid" style={{ marginTop: 16 }}>
                       <div className="panel">
                         <div className="small">Source cwd</div>
                         <div>{selectedRun.cwd}</div>
+                        <div className="small" style={{ marginTop: 8 }}>Repo root</div>
+                        <div style={{ fontSize: 13 }}>{selectedRun.repoRoot}</div>
                       </div>
                       <div className="panel">
-                        <div className="small">Workspace root</div>
-                        <div>{selectedRun.workspaceParentDir}</div>
-                        <div className="small" style={{ marginTop: 8 }}>
-                          {selectedRun.workspacesKept ? "Workspaces kept for debugging" : "Workspaces auto-cleaned after run"}
-                        </div>
-                        {selectedRun.branchWorktreeParentDir ? (
+                        <div className="small">Final branch</div>
+                        {selectedRun.finalBranch ? (
                           <>
-                            <div className="small" style={{ marginTop: 12 }}>Branch worktree root</div>
-                            <div>{selectedRun.branchWorktreeParentDir}</div>
+                            <code className="inline" style={{ marginTop: 6, display: "inline-block" }}>{selectedRun.finalBranch}</code>
+                            {selectedRun.finalCommit ? <div className="small" style={{ marginTop: 4 }}>Commit: {selectedRun.finalCommit}</div> : null}
+                            <GitCommands branchName={selectedRun.finalBranch} />
                           </>
-                        ) : null}
+                        ) : (
+                          <div className="small" style={{ marginTop: 8 }}>Pending — available once judging completes.</div>
+                        )}
                       </div>
                       <div className="panel">
                         <div className="small">Patch apply</div>
@@ -322,16 +312,17 @@
                         {selectedRun.apply ? <div className="small" style={{ marginTop: 8 }}>{selectedRun.apply.message}</div> : null}
                       </div>
                     </div>
-                    {selectedRun.error ? <div style={{ marginTop: 12, color: "#ff6b6b" }}>Run error: {selectedRun.error}</div> : null}
+                    {selectedRun.error ? <div style={{ marginTop: 12, color: "#ff6b6b" }}>Error: {selectedRun.error}</div> : null}
                   </div>
 
+                  {/* Judge */}
                   <div className="panel">
                     <div className="row space-between">
                       <h2 style={{ margin: 0 }}>Judge</h2>
                       <span className={`badge ${statusTone(selectedRun.judge.status)}`}>{selectedRun.judge.status}</span>
                     </div>
                     <div className="small" style={{ marginTop: 8 }}>Model: {selectedRun.judge.model}</div>
-                    <div className="small">Workspace: {selectedRun.judge.workspaceCwd ?? selectedRun.judge.workspaceLabel}</div>
+                    <BranchRef name={selectedRun.judge.branchName} />
                     {selectedRun.judge.reasoning ? (
                       <>
                         <h3 style={{ marginBottom: 8 }}>Reasoning</h3>
@@ -351,13 +342,13 @@
                               <div className="small" style={{ marginTop: 6 }}>{score.notes}</div>
                               {score.criterionScores?.length ? (
                                 <div className="criterion-list">
-                                  {score.criterionScores.map((criterionScore) => (
-                                    <div key={`${score.model}-${criterionScore.criterion}`} className="criterion-item">
+                                  {score.criterionScores.map((cs) => (
+                                    <div key={`${score.model}-${cs.criterion}`} className="criterion-item">
                                       <div className="row space-between">
-                                        <span>{criterionScore.criterion}</span>
-                                        <span className="badge">{criterionScore.score}</span>
+                                        <span>{cs.criterion}</span>
+                                        <span className="badge">{cs.score}</span>
                                       </div>
-                                      <div className="small" style={{ marginTop: 6 }}>{criterionScore.notes}</div>
+                                      <div className="small" style={{ marginTop: 6 }}>{cs.notes}</div>
                                     </div>
                                   ))}
                                 </div>
@@ -370,32 +361,13 @@
                     {selectedRun.judge.error ? <div style={{ marginTop: 12, color: "#ff6b6b" }}>Judge error: {selectedRun.judge.error}</div> : null}
                     {selectedRun.judge.finalDiff ? (
                       <details>
-                        <summary>Final diff</summary>
+                        <summary>Merged diff (from judge)</summary>
                         <pre>{selectedRun.judge.finalDiff}</pre>
                       </details>
                     ) : null}
                   </div>
 
-                  <div className="panel">
-                    <div className="row space-between">
-                      <h2 style={{ margin: 0 }}>Final branch</h2>
-                      <span className={`badge ${selectedRun.finalVersion?.branchName ? "good" : selectedRun.finalVersion?.branchError ? "bad" : "warn"}`}>
-                        {selectedRun.finalVersion?.branchName ? "materialized" : selectedRun.finalVersion?.branchError ? "failed" : "pending"}
-                      </span>
-                    </div>
-                    {selectedRun.finalVersion?.branchName ? (
-                      <>
-                        <div className="small" style={{ marginTop: 8 }}>Branch: {selectedRun.finalVersion.branchName}</div>
-                        <div className="small">Worktree: {selectedRun.finalVersion.branchWorktreeCwd ?? selectedRun.finalVersion.branchWorktreeRoot ?? "—"}</div>
-                        {selectedRun.finalVersion.branchCommit ? <div className="small">Commit: {selectedRun.finalVersion.branchCommit}</div> : null}
-                      </>
-                    ) : selectedRun.finalVersion?.branchError ? (
-                      <div style={{ marginTop: 12, color: "#ff6b6b" }}>{selectedRun.finalVersion.branchError}</div>
-                    ) : (
-                      <div className="small" style={{ marginTop: 8 }}>Available for git-backed runs once the final diff is chosen.</div>
-                    )}
-                  </div>
-
+                  {/* Candidates */}
                   <div className="candidate-grid">
                     {selectedRun.candidates.map((candidate) => (
                       <div key={candidate.model} className={`candidate-card ${selectedRun.winnerModel === candidate.model ? "winner" : ""}`}>
@@ -406,12 +378,10 @@
                             <span className={`badge ${statusTone(candidate.status)}`}>{candidate.status}</span>
                           </div>
                         </div>
-                        <div className="small" style={{ marginTop: 8 }}>Workspace: {candidate.workspaceCwd ?? candidate.workspaceLabel}</div>
-                        {candidate.branchName ? <div className="small">Branch: {candidate.branchName}</div> : null}
-                        {candidate.branchWorktreeCwd || candidate.branchWorktreeRoot ? <div className="small">Branch worktree: {candidate.branchWorktreeCwd ?? candidate.branchWorktreeRoot}</div> : null}
-                        {candidate.branchCommit ? <div className="small">Branch commit: {candidate.branchCommit}</div> : null}
-                        <div className="small">Started: {formatDate(candidate.startedAt)}</div>
-                        <div className="small">Finished: {formatDate(candidate.finishedAt)}</div>
+                        <BranchRef name={candidate.branchName} />
+                        {candidate.baseCommit ? <div className="small">Base: {candidate.baseCommit?.slice(0, 10)}</div> : null}
+                        {candidate.finalCommit ? <div className="small">Final: {candidate.finalCommit?.slice(0, 10)}</div> : null}
+                        <div className="small">Started: {formatDate(candidate.startedAt)} • Finished: {formatDate(candidate.finishedAt)}</div>
                         {candidate.summary ? (
                           <>
                             <h3 style={{ marginBottom: 8 }}>Summary</h3>
@@ -419,10 +389,10 @@
                           </>
                         ) : null}
                         {candidate.error ? <div style={{ marginTop: 12, color: "#ff6b6b" }}>Error: {candidate.error}</div> : null}
-                        {candidate.branchError ? <div style={{ marginTop: 12, color: "#ff6b6b" }}>Branch error: {candidate.branchError}</div> : null}
+                        <GitCommands branchName={candidate.branchName} />
                         {candidate.diff ? (
                           <details>
-                            <summary>Candidate diff</summary>
+                            <summary>Diff (captured from git)</summary>
                             <pre>{candidate.diff}</pre>
                           </details>
                         ) : null}
