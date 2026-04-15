@@ -1,0 +1,61 @@
+#!/bin/sh
+#
+# commit-msg hook: auto-bump version based on conventional commit prefixes
+#   feat:             → minor
+#   fix:, chore:, etc → patch
+#   BREAKING CHANGE   → major
+#   feat!:, fix!:     → major
+#
+# Skip with: SKIP_VERSION_BUMP=1 git commit ...
+# (also auto-skips on amend to avoid infinite loop)
+
+# Guard: skip if we're already amending from this hook
+if [ "$SKIP_VERSION_BUMP" = "1" ]; then
+  exit 0
+fi
+
+COMMIT_MSG_FILE="$1"
+COMMIT_MSG=$(cat "$COMMIT_MSG_FILE")
+
+# Skip merge commits
+case "$COMMIT_MSG" in
+  Merge*) exit 0 ;;
+esac
+
+# Determine bump type
+BUMP="patch"
+
+if echo "$COMMIT_MSG" | grep -qiE "^feat(\(.+\))?:"; then
+  BUMP="minor"
+fi
+
+if echo "$COMMIT_MSG" | grep -qiE "^[a-z]+(\(.+\))?!:" || \
+   echo "$COMMIT_MSG" | grep -q "BREAKING CHANGE"; then
+  BUMP="major"
+fi
+
+# Get current version
+OLD_VERSION=$(node -p "require('./package.json').version" 2>/dev/null)
+if [ -z "$OLD_VERSION" ]; then
+  echo "⚠️  Could not read version from package.json, skipping bump."
+  exit 0
+fi
+
+# Bump version (no git tag, no commit)
+npm version "$BUMP" --no-git-tag-version > /dev/null 2>&1
+NEW_VERSION=$(node -p "require('./package.json').version")
+
+if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
+  exit 0
+fi
+
+echo "📦 Auto-bumped version: $OLD_VERSION → $NEW_VERSION ($BUMP)"
+
+# Stage the updated package.json
+git add package.json
+
+# Append version info to commit message
+echo "" >> "$COMMIT_MSG_FILE"
+echo "Version: $NEW_VERSION" >> "$COMMIT_MSG_FILE"
+
+exit 0

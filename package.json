@@ -35,6 +35,9 @@
       "./prompts"
     ]
   },
+  "scripts": {
+    "prepare": "git config core.hooksPath .githooks"
+  },
   "peerDependencies": {
     "@mariozechner/pi-agent-core": "*",
     "@mariozechner/pi-ai": "*",
