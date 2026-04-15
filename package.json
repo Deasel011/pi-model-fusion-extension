@@ -2,8 +2,13 @@
   "name": "pi-model-fusion",
   "version": "0.1.0",
   "description": "Pi extension for model-fusion coding tasks with automatic judging and optional merge synthesis",
-  "author": "OpenAI Codex",
+  "author": "deasel011",
   "license": "MIT",
+  "main": "index.ts",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Deasel011/pi-model-fusion-extension.git"
+  },
   "type": "module",
   "keywords": [
     "pi-package",
