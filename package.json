@@ -1,6 +1,6 @@
 {
-  "name": "@deasel011/pi-model-fusion",
-  "version": "1.0.4",
+  "name": "pi-model-fusion",
+  "version": "1.0.5",
   "description": "Pi extension for model-fusion coding tasks with automatic judging and optional merge synthesis",
   "author": "deasel011",
   "license": "MIT",
